@@ -14,3 +14,7 @@ add_executable(vxm
 )
 
 target_include_directories(vxm PRIVATE src)
+
+install(TARGETS vxm
+    RUNTIME DESTINATION bin
+)
