@@ -16,7 +16,8 @@ Unlike traditional virtual machines that emulate graphics or use translation lay
 
 ## System Requirements
 
-V×M is a **specialized workstation tool**. It requires specific hardware architectures to function.
+> [!IMPORTANT]
+> V×M is a specialized workstation tool. It requires specific hardware architectures to function.
 
 * **GPU Architecture:**
     * **Required:** Two separate GPUs (e.g., Integrated AMD/Intel + Discrete Radeon/Nvidia).
@@ -27,6 +28,7 @@ V×M is a **specialized workstation tool**. It requires specific hardware archit
 * **Motherboard:**
     * IOMMU (VT-d / AMD-Vi) enabled in BIOS.
     * UEFI Boot enabled.
+
 * **Display:**
     * A monitor with two inputs (e.g., DP for Linux, HDMI for Windows) OR two separate monitors.
 
