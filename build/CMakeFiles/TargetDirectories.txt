@@ -1,3 +1,0 @@
-/Users/uri/GitHub/Nitrux/vxm/build/CMakeFiles/vxm.dir
-/Users/uri/GitHub/Nitrux/vxm/build/CMakeFiles/edit_cache.dir
-/Users/uri/GitHub/Nitrux/vxm/build/CMakeFiles/rebuild_cache.dir
