@@ -1,4 +1,4 @@
-# V×M
+# V×M — Nitrux Hypervisor Orchestrator
 
 ![License](https://img.shields.io/badge/License-BSD--3--Clause-blue)
 
@@ -10,9 +10,9 @@ Unlike traditional virtual machines that emulate graphics or use translation lay
 
 ## Features
 
-* **Zero graphics virtualization**: The Guest OS speaks directly to the PCIe hardware.
-* **Instantly toggle your keyboard** and mouse between Host and Guest without hardware switches.
-* **Dynamically unbinds your dGPU** from the host kernel and attaches it to the VM on demand.
+* Zero graphics virtualization.
+* Instantly toggle your keyboard and mouse without hardware switches.
+* Dynamically unbinds your dGPU from the host kernel and attaches it to the VM on demand.
 
 ## System Requirements
 

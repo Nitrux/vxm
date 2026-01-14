@@ -36,8 +36,8 @@ std::vector<GpuInfo> HardwareDetection::listGpus() const
 {
     std::vector<GpuInfo> gpus;
 
-    for (const auto &entry : fs::recursive_directory_iterator("/sys/bus/pci/devices")) {
-        if (entry.is_symlink()) continue;
+    for (const auto &entry : fs::directory_iterator("/sys/bus/pci/devices")) {
+        if (!entry.is_symlink()) continue;
 
         // Check if device class is VGA (0x0300) or 3D Controller (0x0302)
         fs::path classPath = entry.path() / "class";
@@ -51,7 +51,56 @@ std::vector<GpuInfo> HardwareDetection::listGpus() const
             // Get Vendor/Device IDs
             info.vendorId = sysRead(entry.path() / "vendor");
             info.deviceId = sysRead(entry.path() / "device");
-            info.name = "PCI Device " + info.vendorId + ":" + info.deviceId;
+
+            // Use lspci to get the full device name
+            // Strip domain prefix (0000:) for lspci if present
+            std::string lspciAddress = info.pciAddress;
+            if (lspciAddress.rfind("0000:", 0) == 0) {
+                lspciAddress = lspciAddress.substr(5);
+            }
+            std::string lspciCmd = "lspci -s " + lspciAddress + " 2>/dev/null";
+            FILE* pipe = popen(lspciCmd.c_str(), "r");
+            if (pipe) {
+                char buffer[512];
+                if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+                    std::string lspciOutput = buffer;
+                    // Remove trailing newline
+                    if (!lspciOutput.empty() && lspciOutput.back() == '\n') {
+                        lspciOutput.pop_back();
+                    }
+
+                    // Format: "03:00.0 VGA compatible controller: Vendor Device Name"
+                    // Extract everything after the first colon
+                    size_t colonPos = lspciOutput.find(':');
+                    if (colonPos != std::string::npos) {
+                        // Find the second colon (after device type)
+                        size_t secondColonPos = lspciOutput.find(':', colonPos + 1);
+                        if (secondColonPos != std::string::npos) {
+                            info.name = lspciOutput.substr(secondColonPos + 2); // +2 to skip ": "
+                        } else {
+                            info.name = lspciOutput.substr(colonPos + 2);
+                        }
+                    } else {
+                        info.name = lspciOutput;
+                    }
+                }
+                pclose(pipe);
+            }
+
+            // Fallback if lspci fails
+            if (info.name.empty()) {
+                std::string vendorName;
+                if (info.vendorId == "0x1002") {
+                    vendorName = "AMD/ATI";
+                } else if (info.vendorId == "0x10de") {
+                    vendorName = "NVIDIA";
+                } else if (info.vendorId == "0x8086") {
+                    vendorName = "Intel";
+                } else {
+                    vendorName = "Unknown";
+                }
+                info.name = vendorName + " GPU [" + info.vendorId + ":" + info.deviceId + "]";
+            }
 
             // Check boot_vga
             info.isBootVga = (sysRead(entry.path() / "boot_vga") == "1");
@@ -96,14 +145,38 @@ std::vector<GpuInfo> HardwareDetection::listGpus() const
 std::optional<GpuInfo> HardwareDetection::findGpuByString(const std::string &query) const
 {
     auto gpus = listGpus();
-    
+    std::vector<GpuInfo> matches;
+
     for (const auto &gpu : gpus) {
-        // Check exact PCI ID match
+        // Check PCI address match (supports both 03:00.0 and 0000:03:00.0)
         if (gpu.pciAddress.find(query) != std::string::npos) {
-            return gpu;
+            matches.push_back(gpu);
         }
-        // Check Name match (if we had full names)
-        // Check Vendor/Device ID match
+        // Check case-insensitive name match
+        else {
+            std::string lowerQuery = query;
+            std::string lowerName = gpu.name;
+            std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::tolower);
+            std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+
+            if (lowerName.find(lowerQuery) != std::string::npos) {
+                matches.push_back(gpu);
+            }
+        }
+    }
+
+    // If we found exactly one match, return it
+    if (matches.size() == 1) {
+        return matches[0];
+    }
+
+    // If multiple matches, print them and return nullopt
+    if (matches.size() > 1) {
+        std::cerr << "[Error] Multiple GPUs match '" << query << "':\n";
+        for (const auto &gpu : matches) {
+            std::cerr << "  " << gpu.pciAddress << " " << gpu.name << "\n";
+        }
+        std::cerr << "Please use a more specific PCI address (e.g., '03:00.0')." << std::endl;
     }
 
     return std::nullopt;
@@ -116,8 +189,8 @@ GpuInfo HardwareDetection::findPassthroughGpu() const
 
     // Iterate PCI devices to find one where boot_vga == 0
     // Original script logic: find /sys/devices/pci* -name boot_vga
-    for (const auto &entry : fs::recursive_directory_iterator("/sys/bus/pci/devices")) {
-        if (entry.is_symlink()) {
+    for (const auto &entry : fs::directory_iterator("/sys/bus/pci/devices")) {
+        if (!entry.is_symlink()) {
             continue;
         }
 
@@ -148,7 +221,51 @@ GpuInfo HardwareDetection::findPassthroughGpu() const
                 // Get vendor and device IDs for ROM detection
                 info.vendorId = sysRead(entry.path() / "vendor");
                 info.deviceId = sysRead(entry.path() / "device");
-                info.name = "PCI Device " + info.vendorId + ":" + info.deviceId;
+
+                // Use lspci to get the full device name
+                std::string fullPciAddress = entry.path().filename().string();
+                // Strip domain prefix (0000:) for lspci if present
+                std::string lspciAddress = fullPciAddress;
+                if (lspciAddress.rfind("0000:", 0) == 0) {
+                    lspciAddress = lspciAddress.substr(5);
+                }
+                std::string lspciCmd = "lspci -s " + lspciAddress + " 2>/dev/null";
+                FILE* pipe = popen(lspciCmd.c_str(), "r");
+                if (pipe) {
+                    char buffer[512];
+                    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+                        std::string lspciOutput = buffer;
+                        if (!lspciOutput.empty() && lspciOutput.back() == '\n') {
+                            lspciOutput.pop_back();
+                        }
+
+                        size_t colonPos = lspciOutput.find(':');
+                        if (colonPos != std::string::npos) {
+                            size_t secondColonPos = lspciOutput.find(':', colonPos + 1);
+                            if (secondColonPos != std::string::npos) {
+                                info.name = lspciOutput.substr(secondColonPos + 2);
+                            } else {
+                                info.name = lspciOutput.substr(colonPos + 2);
+                            }
+                        }
+                    }
+                    pclose(pipe);
+                }
+
+                // Fallback if lspci fails
+                if (info.name.empty()) {
+                    std::string vendorName;
+                    if (info.vendorId == "0x1002") {
+                        vendorName = "AMD/ATI";
+                    } else if (info.vendorId == "0x10de") {
+                        vendorName = "NVIDIA";
+                    } else if (info.vendorId == "0x8086") {
+                        vendorName = "Intel";
+                    } else {
+                        vendorName = "Unknown";
+                    }
+                    info.name = vendorName + " GPU [" + info.vendorId + ":" + info.deviceId + "]";
+                }
 
                 // ROM detection for reset bug
                 info.needsRom = false;
@@ -250,7 +367,6 @@ CpuInfo HardwareDetection::detectCpuTopology() const
 uint64_t HardwareDetection::getSafeRamAmount() const
 {
     // Read MemTotal from /proc/meminfo
-    // Return 50% of available RAM in GB
     std::ifstream meminfo("/proc/meminfo");
     std::string line;
     uint64_t kb = 0;
@@ -268,7 +384,12 @@ uint64_t HardwareDetection::getSafeRamAmount() const
     double gb = static_cast<double>(kb) / (1024.0 * 1024.0);
     uint64_t halfGb = static_cast<uint64_t>(gb / 2.0 + 0.5); // Round to nearest
 
-    // Ensure at least 4GB
+    // Cap at 18GB maximum (sufficient for gaming, prevents excessive allocation)
+    if (halfGb > 18) {
+        halfGb = 18;
+    }
+
+    // Ensure at least 4GB minimum
     if (halfGb < 4) {
         halfGb = 4;
     }

@@ -37,9 +37,9 @@ make install
 # -- Run checkinstall and Build Debian Package
 
 >> description-pak printf "%s\n" \
-	'MauiKit Firewalld Editor.' \
+	'Nitrux Hypervisor Orchestrator.' \
 	'' \
-	'A MauiKit-based policy editor for Firewalld.' \
+	'V×M (Virtual × Metal) is a specialized hypervisor orchestrator for Nitrux.' \
 	''
 
 checkinstall -D -y \

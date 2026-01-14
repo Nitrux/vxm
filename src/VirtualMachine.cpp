@@ -142,11 +142,6 @@ bool VirtualMachine::checkRequirements() const
         return false;
     }
 
-    // 6. Network backend sanity check
-    std::cout << "[VxM] Network Backend: " << Config::NetworkBackend << " (SLIRP User Networking)" << std::endl;
-    std::cout << "      Pros: No root setup required (bridges/taps), works out of the box" << std::endl;
-    std::cout << "      Cons: Windows cannot be seen by other LAN devices (no incoming connections)" << std::endl;
-
     return true;
 }
 
@@ -166,7 +161,8 @@ bool VirtualMachine::validateIommuGroup(const std::string &pciAddress) const
         return false;
     }
 
-    fs::path iommuGroupPath = fs::read_symlink(iommuGroupLink);
+    // read_symlink returns a relative path, resolve it to absolute path
+    fs::path iommuGroupPath = fs::canonical(iommuGroupLink);
     fs::path devicesInGroup = iommuGroupPath / "devices";
 
     // Count devices in the IOMMU group
@@ -391,21 +387,36 @@ void VirtualMachine::initializeCrate()
         std::cout << "[VxM] VirtIO drivers ISO not found. Downloading..." << std::endl;
         std::cout << "[VxM] Source: " << Config::VirtioDriversUrl << std::endl;
 
+        // Check for curl or wget before forking
+        bool hasCurl = (std::system("command -v curl >/dev/null 2>&1") == 0);
+        bool hasWget = (std::system("command -v wget >/dev/null 2>&1") == 0);
+
+        if (!hasCurl && !hasWget) {
+            std::cerr << "[Error] Neither 'curl' nor 'wget' found. Please install one of them:" << std::endl;
+            std::cerr << "        sudo apt install curl   # or" << std::endl;
+            std::cerr << "        sudo apt install wget" << std::endl;
+            throw std::runtime_error("No download tool available (curl/wget).");
+        }
+
         pid_t pid = fork();
         if (pid == -1) {
             throw std::runtime_error("Failed to fork process for download.");
         } else if (pid == 0) {
-            // Child process - use curl or wget
-            execlp("curl", "curl", "-L", "-o",
-                   Config::VirtioIso.string().c_str(),
-                   Config::VirtioDriversUrl.c_str(),
-                   "--progress-bar", nullptr);
-            // If curl fails, try wget
-            execlp("wget", "wget", "-O",
-                   Config::VirtioIso.string().c_str(),
-                   Config::VirtioDriversUrl.c_str(), nullptr);
-            // If both fail
-            std::cerr << "[Error] Failed to execute curl or wget for download" << std::endl;
+            // Child process - prefer curl, fallback to wget
+            if (hasCurl) {
+                execlp("curl", "curl", "-L", "-o",
+                       Config::VirtioIso.string().c_str(),
+                       Config::VirtioDriversUrl.c_str(),
+                       "--progress-bar", nullptr);
+            }
+            // If curl exec fails or we only have wget
+            if (hasWget) {
+                execlp("wget", "wget", "-O",
+                       Config::VirtioIso.string().c_str(),
+                       Config::VirtioDriversUrl.c_str(), nullptr);
+            }
+            // If both execlp calls fail (shouldn't happen if checks passed)
+            std::cerr << "[Error] Failed to execute download tool" << std::endl;
             exit(1);
         } else {
             // Parent process
@@ -449,6 +460,7 @@ void VirtualMachine::initializeCrate()
         }
 
         fs::copy_file(Config::OvmfVarsTemplatePath, Config::OvmfVarsPath);
+        std::cout << "[VxM] UEFI variables initialized from: " << Config::OvmfVarsTemplatePath.filename() << std::endl;
     }
 
     std::cout << "\n[VxM] Storage initialization complete!" << std::endl;
@@ -523,7 +535,7 @@ void VirtualMachine::start()
 
     if (!gpuManager.bindToVfio()) {
         cleanup(); // Cleanup any partially bound devices
-        throw std::runtime_error("Failed to bind GPU to VFIO driver.");
+        throw std::runtime_error("Failed to bind GPU to VFIO driver. See error details above.");
     }
     m_boundDevices.push_back(gpu.pciAddress);
 
@@ -664,6 +676,44 @@ void VirtualMachine::start()
     // If we reach here, exec failed
     std::cerr << "[Error] Failed to start QEMU execution." << std::endl;
     exit(1);
+}
+
+void VirtualMachine::reset()
+{
+    std::cout << "[VxM] Resetting VxM..." << std::endl;
+
+    // List of paths to remove
+    std::vector<fs::path> pathsToRemove = {
+        Config::VxmDir,                          // ~/VxM directory (images, ISOs, roms, etc.)
+        fs::path(Config::HomeDir) / ".config" / "vxm"  // ~/.config/vxm (config files)
+    };
+
+    bool anyErrors = false;
+
+    for (const auto &path : pathsToRemove) {
+        if (fs::exists(path)) {
+            try {
+                if (fs::is_directory(path)) {
+                    std::cout << "[VxM] Removing directory: " << path << std::endl;
+                    fs::remove_all(path);
+                } else {
+                    std::cout << "[VxM] Removing file: " << path << std::endl;
+                    fs::remove(path);
+                }
+            } catch (const std::exception &e) {
+                std::cerr << "[Error] Failed to remove " << path << ": " << e.what() << std::endl;
+                anyErrors = true;
+            }
+        } else {
+            std::cout << "[VxM] Path does not exist: " << path << std::endl;
+        }
+    }
+
+    if (!anyErrors) {
+        std::cout << "[VxM] Reset complete. All VxM files have been removed." << std::endl;
+    } else {
+        std::cerr << "[VxM] Reset completed with errors. Some files may not have been removed." << std::endl;
+    }
 }
 
 } // namespace VxM

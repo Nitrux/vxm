@@ -42,6 +42,12 @@ public:
      */
     void cleanup();
 
+    /**
+     * @brief Reset VxM by removing all created files and directories.
+     * This removes the entire VxM directory including disks, ISOs, config, etc.
+     */
+    static void reset();
+
 private:
     std::vector<std::string> buildQemuArgs() const;
 

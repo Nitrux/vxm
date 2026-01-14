@@ -31,17 +31,20 @@ namespace Config
     // OVMF Firmware Paths - Multiple possible locations
     // Different distributions use different paths/cases
     const std::vector<std::filesystem::path> OvmfCodeSearchPaths = {
+        "/usr/share/OVMF/OVMF_CODE_4M.fd",        // 4M variant (all caps)
         "/usr/share/OVMF/OVMF_CODE.fd",           // Standard (all caps)
+        "/usr/share/ovmf/OVMF_CODE_4M.fd",        // 4M variant (lowercase directory)
         "/usr/share/ovmf/OVMF_CODE.fd",           // Lowercase directory
         "/usr/share/ovmf/OVMF.fd",                // Alternative name
-        "/usr/share/edk2/ovmf/OVMF_CODE.fd",      // EDK2 structure
-        "/usr/share/qemu/OVMF_CODE.fd"            // QEMU directory
+        "/usr/share/qemu/OVMF.fd",                // QEMU directory
+        "/usr/share/edk2/ovmf/OVMF_CODE.fd"       // EDK2 structure
     };
 
     const std::vector<std::filesystem::path> OvmfVarsSearchPaths = {
+        "/usr/share/OVMF/OVMF_VARS_4M.fd",        // 4M variant (all caps)
         "/usr/share/OVMF/OVMF_VARS.fd",           // Standard (all caps)
+        "/usr/share/ovmf/OVMF_VARS_4M.fd",        // 4M variant (lowercase directory)
         "/usr/share/ovmf/OVMF_VARS.fd",           // Lowercase directory
-        "/usr/share/ovmf/OVMF_VARS.fd",           // Alternative
         "/usr/share/edk2/ovmf/OVMF_VARS.fd",      // EDK2 structure
         "/usr/share/qemu/OVMF_VARS.fd"            // QEMU directory
     };

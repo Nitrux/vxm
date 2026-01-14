@@ -71,13 +71,25 @@ bool DeviceManager::bindToVfio()
         std::filesystem::path unbindPath = m_sysPath / "driver" / "unbind";
         if (!writeSysfs(unbindPath, m_pciAddress)) {
             std::cerr << "[Error] Failed to unbind " << m_pciAddress << " from " << currentDriver << std::endl;
+            std::cerr << "        GPU is bound to " << currentDriver << " instead of vfio-pci." << std::endl;
+            std::cerr << std::endl;
+            std::cerr << "        Causes:" << std::endl;
+            std::cerr << "        - Missing 'iommu=pt' kernel parameter" << std::endl;
+            std::cerr << "        - VFIO not configured in initramfs" << std::endl;
+            std::cerr << "        - This is the primary/boot GPU\n" << std::endl;
             return false;
         }
     }
 
-    // 2. Load vfio-pci module just in case
-    // In a real implementation, use kmod or system("modprobe vfio-pci")
-    std::system("modprobe vfio-pci");
+    // 2. Ensure vfio-pci module is loaded
+    // Check if module is already loaded before calling modprobe
+    if (!std::filesystem::exists("/sys/bus/pci/drivers/vfio-pci")) {
+        std::cout << "[VxM] Loading vfio-pci kernel module..." << std::endl;
+        int ret = std::system("modprobe vfio-pci 2>/dev/null");
+        if (ret != 0) {
+            std::cerr << "[Warning] Failed to load vfio-pci module. It may already be built-in." << std::endl;
+        }
+    }
 
     // 3. Bind to vfio-pci
     // We explicitly write the Vendor Device ID to /sys/bus/pci/drivers/vfio-pci/new_id
