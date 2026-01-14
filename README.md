@@ -22,7 +22,7 @@ V×M is a **specialized workstation tool**. It requires specific hardware archit
     * **Required:** Two separate GPUs (e.g., Integrated AMD/Intel + Discrete Radeon/Nvidia).
 
 > [!WARNING]
-> We do not support Single-GPU setups.*
+> We do not support Single-GPU setups.
 
 * **Motherboard:**
     * IOMMU (VT-d / AMD-Vi) enabled in BIOS.
