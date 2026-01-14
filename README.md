@@ -4,7 +4,7 @@
 
 # Introduction
 
-VxM (pronounced as: Vi-Ex-EM) is a specialized hypervisor orchestrator for **Nitrux**. It transforms a multi-GPU workstation into a "Twin Engine" system, allowing you to run Linux (Host) and Windows (Guest) simultaneously on separate GPUs with near-native performance.
+VxM (pronounced as its individual letters) is a specialized hypervisor orchestrator for **Nitrux**. It transforms a multi-GPU workstation into a "Twin Engine" system, allowing you to run Linux (Host) and Windows (Guest) simultaneously on separate GPUs with near-native performance.
 
 Unlike traditional virtual machines that emulate graphics or use translation layers, VxM uses **VFIO Passthrough** to give the Guest OS complete, exclusive control over your secondary GPU.
 
