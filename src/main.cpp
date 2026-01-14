@@ -38,7 +38,7 @@ void signalHandler(int signum)
 
 void printUsage()
 {
-    std::cout << "VxM - Run a hardware-accelerated VM\n"
+    std::cout << "VxM - Run a hardware-accelerated VM in Nitrux\n"
               << "Copyright (C) " << VXM_COPYRIGHT_YEAR << " Nitrux Latinoamericana S.C.\n\n"
               << "Usage:\n"
               << "  vxm [COMMAND] <options>\n\n"
@@ -48,7 +48,7 @@ void printUsage()
               << "  status        Show current VM status and hardware binding state.\n"
               << "  list-gpus     Scan system for available GPUs and display PCI addresses.\n"
               << "  config        Update configuration and hardware profiles.\n"
-              << "  reset         Remove all VxM files and configuration (clean slate). (requires root)\n\n"
+              << "  reset         Remove all VxM files and configuration (clean slate).\n\n"
               << "Options:\n"
               << "  --set-gpu <PCI_ADDRESS>    Set the GPU for passthrough by PCI address.\n";
 }
@@ -71,7 +71,6 @@ int main(int argc, char *argv[])
     try {
         if (command == "init") {
             vm.initializeCrate();
-            std::cout << "VxM storage initialized." << std::endl;
         } else if (command == "list-gpus") {
             VxM::HardwareDetection hw;
             auto gpus = hw.listGpus();
@@ -160,11 +159,14 @@ int main(int argc, char *argv[])
                 std::cout << "      Run 'vxm start' to launch" << std::endl;
             }
         } else if (command == "reset") {
-            // Check for root permissions
-            if (geteuid() != 0) {
-                std::cerr << "[Error] The 'reset' command requires root permissions.\n"
-                          << "        Some VxM files may have been created by root during 'vxm start'.\n"
-                          << "        Please run: sudo vxm reset" << std::endl;
+            // If running with sudo, ensure user environment is preserved
+            const char* sudoUser = std::getenv("SUDO_USER");
+            const char* home = std::getenv("HOME");
+            if (geteuid() == 0 && sudoUser && home && std::string(home) == "/root") {
+                std::cerr << "[Error] Running as root with HOME=/root\n"
+                          << "        VxM files are in the user's home directory, not /root.\n"
+                          << "        Please use: sudo -E vxm reset\n"
+                          << "        Or set HOME manually: sudo HOME=/home/" << sudoUser << " vxm reset" << std::endl;
                 return 1;
             }
 

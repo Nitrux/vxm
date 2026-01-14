@@ -689,6 +689,7 @@ void VirtualMachine::reset()
     };
 
     bool anyErrors = false;
+    bool permissionError = false;
 
     for (const auto &path : pathsToRemove) {
         if (fs::exists(path)) {
@@ -701,7 +702,14 @@ void VirtualMachine::reset()
                     fs::remove(path);
                 }
             } catch (const std::exception &e) {
-                std::cerr << "[Error] Failed to remove " << path << ": " << e.what() << std::endl;
+                std::string errorMsg = e.what();
+                std::cerr << "[Error] Failed to remove " << path << ": " << errorMsg << std::endl;
+
+                // Check if this is a permission error
+                if (errorMsg.find("Permission denied") != std::string::npos ||
+                    errorMsg.find("permission") != std::string::npos) {
+                    permissionError = true;
+                }
                 anyErrors = true;
             }
         } else {
@@ -712,7 +720,13 @@ void VirtualMachine::reset()
     if (!anyErrors) {
         std::cout << "[VxM] Reset complete. All VxM files have been removed." << std::endl;
     } else {
-        std::cerr << "[VxM] Reset completed with errors. Some files may not have been removed." << std::endl;
+        if (permissionError) {
+            std::cerr << "[VxM] Reset failed due to permission errors.\n"
+                      << "      Some files may have been created by root during 'vxm start'.\n"
+                      << "      Please run: sudo vxm reset" << std::endl;
+        } else {
+            std::cerr << "[VxM] Reset completed with errors. Some files may not have been removed." << std::endl;
+        }
     }
 }
 
