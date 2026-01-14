@@ -7,7 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 string(TIMESTAMP VXM_COPYRIGHT_YEAR "%Y")
 add_compile_definitions(VXM_COPYRIGHT_YEAR="${VXM_COPYRIGHT_YEAR}")
 
-add_compile_options(-mavx2 -O3)
+# === 1. COMPILER FLAGS (x86-64-v3) ===
+# Only apply x86-64 optimizations if we are actually compiling for x86_64.
+if((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+        add_compile_options(-march=x86-64-v3)
+    endif()
+endif()
 
 add_executable(vxm
     src/main.cpp

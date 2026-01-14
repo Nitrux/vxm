@@ -384,9 +384,9 @@ uint64_t HardwareDetection::getSafeRamAmount() const
     double gb = static_cast<double>(kb) / (1024.0 * 1024.0);
     uint64_t halfGb = static_cast<uint64_t>(gb / 2.0 + 0.5); // Round to nearest
 
-    // Cap at 18GB maximum (sufficient for gaming, prevents excessive allocation)
-    if (halfGb > 18) {
-        halfGb = 18;
+    // Cap at 16GB maximum (sufficient for gaming, prevents excessive allocation)
+    if (halfGb > 16) {
+        halfGb = 16;
     }
 
     // Ensure at least 4GB minimum

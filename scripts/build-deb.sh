@@ -39,7 +39,7 @@ make install
 >> description-pak printf "%s\n" \
 	'Nitrux Hypervisor Orchestrator.' \
 	'' \
-	'VxM (pronounced as: Vi-Ex-EM) is a specialized hypervisor orchestrator for Nitrux.' \
+	'VxM is a specialized hypervisor orchestrator for Nitrux.' \
 	''
 
 checkinstall -D -y \
@@ -55,7 +55,7 @@ checkinstall -D -y \
 	--pakdir=. \
 	--maintainer=uri_herrera@nxos.org \
 	--provides=vxm \
-	--requires="curl,nitrux-vfio-settings,ovmf,swtpm,qemu-system-x86" \
+	--requires="clang,curl,nitrux-vfio-settings,ovmf,swtpm,qemu-system-x86" \
 	--nodoc \
 	--strip=no \
 	--stripso=yes \
