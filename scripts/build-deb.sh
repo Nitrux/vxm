@@ -39,7 +39,7 @@ make install
 >> description-pak printf "%s\n" \
 	'Nitrux Hypervisor Orchestrator.' \
 	'' \
-	'V×M (Virtual × Metal) is a specialized hypervisor orchestrator for Nitrux.' \
+	'VxM (pronounced as: Vi-Ex-EM) is a specialized hypervisor orchestrator for Nitrux.' \
 	''
 
 checkinstall -D -y \
