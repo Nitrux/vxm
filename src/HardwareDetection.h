@@ -1,0 +1,80 @@
+/*
+ * Copyright (C) 2026 Nitrux Latinoamericana S.C.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
+#ifndef HARDWAREDETECTION_H
+#define HARDWAREDETECTION_H
+
+#include <string>
+#include <vector>
+#include <optional>
+#include <cstdint>
+
+namespace VxM
+{
+
+struct GpuInfo
+{
+    std::string pciAddress;      // e.g., "0000:03:00.0"
+    std::string audioPciAddress; // e.g., "0000:03:00.1"
+    std::string name;            // e.g., "NVIDIA Corporation AD102 [GeForce RTX 4090]"
+    std::string vendorId;        // e.g., "0x1002" for AMD, "0x10de" for NVIDIA
+    std::string deviceId;        // e.g., "0x67df" for RX 580
+    bool isBootVga;              // True if this is the primary host GPU
+    bool needsRom;               // True if GPU requires a patched ROM file (reset bug)
+    std::string romPath;         // Path to ROM file if needsRom is true
+};
+
+struct CpuInfo
+{
+    int allocatedCores;
+    int threadsPerCore;
+    bool isRyzen;
+    std::string vendor;
+};
+
+class HardwareDetection
+{
+public:
+    HardwareDetection() = default;
+
+    /**
+     * @brief Returns a list of all detected GPUs on the system.
+     */
+    std::vector<GpuInfo> listGpus() const;
+
+    /**
+     * @brief Finds a GPU by a partial string match (e.g., "7900" or "03:00.0").
+     * Returns std::nullopt if not found or ambiguous.
+     */
+    std::optional<GpuInfo> findGpuByString(const std::string &query) const;
+
+    /**
+     * @brief Finds a suitable GPU for passthrough (non-boot VGA).
+     * Throws std::runtime_error if no suitable GPU is found.
+     * @return GpuInfo for the passthrough GPU.
+     */
+    GpuInfo findPassthroughGpu() const;
+
+    /**
+     * @brief Calculates optimal core count for the guest.
+     * Logic derived from original vmetal scripts.
+     */
+    CpuInfo detectCpuTopology() const;
+
+    /**
+     * @brief Returns safe RAM allocation (50% of host).
+     */
+    uint64_t getSafeRamAmount() const;
+
+    /**
+     * @brief Generates a persistent-style MAC address.
+     */
+    std::string generateMacAddress() const;
+};
+
+} // namespace VxM
+
+#endif // HARDWAREDETECTION_H

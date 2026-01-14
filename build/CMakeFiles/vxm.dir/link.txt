@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/vxm.dir/link.d CMakeFiles/vxm.dir/src/main.cpp.o CMakeFiles/vxm.dir/src/HardwareDetection.cpp.o CMakeFiles/vxm.dir/src/VirtualMachine.cpp.o CMakeFiles/vxm.dir/src/DeviceManager.cpp.o CMakeFiles/vxm.dir/src/ProfileManager.cpp.o CMakeFiles/vxm.dir/src/InputManager.cpp.o -o vxm
