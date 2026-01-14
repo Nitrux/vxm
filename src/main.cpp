@@ -28,13 +28,24 @@ void signalHandler(int signum)
 
 void printUsage()
 {
-    std::cout << "VxM (Virtual x Metal) - Virtual Machine Manager\n"
+    std::cout << "VxM (Virtual x Metal) - Hardware Passthrough Manager\n"
+              << "Copyright (C) " << VXM_COPYRIGHT_YEAR << " Nitrux Latinoamericana S.C.\n\n"
               << "Usage:\n"
-              << "  vxm init         Initialize storage (disks, directories)\n"
-              << "  vxm list-gpus    List available GPUs\n"
-              << "  vxm config       Configure VxM settings\n"
-              << "  vxm start        Start the virtual machine\n"
-              << "  vxm status       Check VM status\n";
+              << "  vxm [COMMAND] <options>\n\n"
+              << "Core Commands:\n"
+              << "  init          Initialize storage, directory structure, and download required drivers.\n"
+              << "  start         Boot the virtual machine using the active hardware profile.\n"
+              << "  status        Show current VM status and hardware binding state.\n\n"
+              << "Hardware Management:\n"
+              << "  list-gpus     Scan system for available GPUs and display PCI addresses.\n"
+              << "  config        Update configuration and hardware profiles.\n\n"
+              << "Configuration Options:\n"
+              << "  --set-gpu <ID>    Set the primary GPU for passthrough (e.g., '03:00.0' or 'Nvidia').\n\n"
+              << "Examples:\n"
+              << "  vxm init\n"
+              << "  vxm list-gpus\n"
+              << "  vxm config --set-gpu 0000:03:00.0\n"
+              << "  vxm start\n";
 }
 
 int main(int argc, char *argv[])

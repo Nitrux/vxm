@@ -4,6 +4,9 @@ project(vxm VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+string(TIMESTAMP VXM_COPYRIGHT_YEAR "%Y")
+add_compile_definitions(VXM_COPYRIGHT_YEAR="${VXM_COPYRIGHT_YEAR}")
+
 add_compile_options(-mavx2 -O3)
 
 add_executable(vxm
