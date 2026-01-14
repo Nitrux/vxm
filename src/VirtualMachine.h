@@ -27,12 +27,12 @@ public:
     bool checkRequirements() const;
 
     /**
-     * @brief Initializes the crate (creates disks if missing).
+     * @brief Initializes storage (creates disks if missing).
      */
     void initializeCrate();
 
     /**
-     * @brief Ignite the engine (Starts QEMU).
+     * @brief Starts the virtual machine (Starts QEMU).
      * This function calls execvp and does not return on success.
      */
     void start();

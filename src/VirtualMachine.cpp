@@ -451,7 +451,7 @@ void VirtualMachine::initializeCrate()
         fs::copy_file(Config::OvmfVarsTemplatePath, Config::OvmfVarsPath);
     }
 
-    std::cout << "\n[VxM] Crate initialization complete!" << std::endl;
+    std::cout << "\n[VxM] Storage initialization complete!" << std::endl;
 }
 
 void VirtualMachine::start()

@@ -28,13 +28,13 @@ void signalHandler(int signum)
 
 void printUsage()
 {
-    std::cout << "VxM (Virtual x Metal) - Twin Engine Manager\n"
+    std::cout << "VxM (Virtual x Metal) - Virtual Machine Manager\n"
               << "Usage:\n"
-              << "  vxm init         Initialize the crate (disks, directories)\n"
+              << "  vxm init         Initialize storage (disks, directories)\n"
               << "  vxm list-gpus    List available GPUs\n"
               << "  vxm config       Configure VxM settings\n"
-              << "  vxm start        Start the Guest Engine\n"
-              << "  vxm status       Check engine status\n";
+              << "  vxm start        Start the virtual machine\n"
+              << "  vxm status       Check VM status\n";
 }
 
 int main(int argc, char *argv[])
@@ -55,7 +55,7 @@ int main(int argc, char *argv[])
     try {
         if (command == "init") {
             vm.initializeCrate();
-            std::cout << "VxM Crate Initialized." << std::endl;
+            std::cout << "VxM storage initialized." << std::endl;
         } else if (command == "list-gpus") {
             VxM::HardwareDetection hw;
             auto gpus = hw.listGpus();
