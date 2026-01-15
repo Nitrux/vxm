@@ -501,7 +501,7 @@ void VirtualMachine::start()
         gpu = hw.findPassthroughGpu();
     }
     CpuInfo cpu = hw.detectCpuTopology();
-    uint64_t ram = hw.getSafeRamAmount();
+    uint64_t ram = hw.getSafeRamAmount(profile.maxRam);
 
     // 2. Reserve hugepages for better performance
     reserveHugepages(ram);
@@ -541,8 +541,46 @@ void VirtualMachine::start()
     DeviceManager audioManager(gpu.audioPciAddress);
 
     if (!gpuManager.bindToVfio()) {
-        cleanup(); // Cleanup any partially bound devices
-        throw std::runtime_error("Failed to bind GPU to VFIO driver. See error details above.");
+        // Offer static binding as a fallback for laptops/hybrid graphics
+        std::cout << "\n[VxM] Troubleshooting: Laptop / Hybrid Graphics Detected?" << std::endl;
+        std::cout << "      On some laptops (Optimus/Muxless), the GPU cannot be detached at runtime." << std::endl;
+        std::cout << "      We can enable 'Static Binding' to seize the GPU at boot time instead." << std::endl;
+        std::cout << "      (This disables the dGPU for the host OS completely)." << std::endl;
+        std::cout << "\n      Would you like to enable Static Binding for the next boot? [y/N]: ";
+
+        std::string answer;
+        std::getline(std::cin, answer);
+
+        if (answer == "y" || answer == "Y") {
+            // Create the trigger file for initramfs hook
+            fs::path triggerFile = "/etc/vxm/static-bind-enabled";
+
+            // Ensure directory exists
+            fs::create_directories(triggerFile.parent_path());
+
+            std::ofstream outfile(triggerFile);
+            if (outfile) {
+                // Write GPU info for the initramfs hook to use
+                outfile << "gpu=" << gpu.pciAddress << "\n";
+                outfile << "vendor=" << gpu.vendorId << "\n";
+                outfile << "device=" << gpu.deviceId << "\n";
+                outfile.close();
+
+                if (fs::exists(triggerFile)) {
+                    std::cout << "\n[VxM] Static Binding ENABLED." << std::endl;
+                    std::cout << "      GPU: " << gpu.pciAddress << " (" << gpu.vendorId << ":" << gpu.deviceId << ")" << std::endl;
+                    std::cout << "\n      Please REBOOT your system." << std::endl;
+                    std::cout << "      The GPU will be isolated automatically during the next boot." << std::endl;
+                    std::cout << "      Then run 'sudo -E vxm start' again." << std::endl;
+                    cleanup();
+                    exit(0);
+                }
+            }
+            std::cerr << "[Error] Failed to create trigger file at " << triggerFile << std::endl;
+        }
+
+        cleanup();
+        throw std::runtime_error("Failed to bind GPU to VFIO driver.");
     }
     m_boundDevices.push_back(gpu.pciAddress);
 
