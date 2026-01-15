@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <sys/wait.h>
 #include <cerrno>
+#include <cstring>
 
 using namespace VxM;
 

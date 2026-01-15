@@ -109,6 +109,12 @@ private:
      */
     bool switchMonitorInput(const std::string &monitor, uint8_t inputValue) const;
 
+    /**
+     * @brief Fixes file ownership when running as root via sudo.
+     * @param path The file or directory path to fix ownership for.
+     */
+    void fixFileOwnership(const std::filesystem::path& path) const;
+
     // Track bound devices and state for cleanup
     std::vector<std::string> m_boundDevices;
     pid_t m_tpmPid;

@@ -97,7 +97,8 @@ void VirtualMachine::cleanup()
         if (fs::exists(statePath)) {
             std::ifstream stateFile(statePath);
             uint64_t savedHugepages = 0;
-            std::getline(stateFile, std::string()); // Read TPM PID (first line)
+            std::string dummyLine;
+            std::getline(stateFile, dummyLine); // Read TPM PID (first line)
             stateFile.seekg(0); // Reset to beginning
             if (stateFile >> m_tpmPid >> savedHugepages) {
                 std::getline(stateFile, savedGpuBdf); // Consume newline
@@ -761,16 +762,17 @@ void VirtualMachine::start()
     // We are about to exec() into QEMU, which will wipe this process memory.
     // We must save critical cleanup state (TPM PID, Hugepages, GPU BDF) to disk so the Parent
     // process can read it when QEMU exits.
-    fs::path statePath = Config::VxmDir / ".runtime_state";
-    std::ofstream stateFile(statePath);
-    if (stateFile) {
-        stateFile << m_tpmPid << "\n";
-        stateFile << (m_hugepagesModified ? m_originalHugepages : 0) << "\n";
-        stateFile << gpu.pciAddress << "\n";
-        stateFile << gpu.audioPciAddress << "\n";
-        stateFile.close();
-    } else {
-        std::cerr << "[Warning] Failed to save runtime state. Cleanup might be incomplete." << std::endl;
+    {
+        std::ofstream stateFile(statePath);
+        if (stateFile) {
+            stateFile << m_tpmPid << "\n";
+            stateFile << (m_hugepagesModified ? m_originalHugepages : 0) << "\n";
+            stateFile << gpu.pciAddress << "\n";
+            stateFile << gpu.audioPciAddress << "\n";
+            stateFile.close();
+        } else {
+            std::cerr << "[Warning] Failed to save runtime state. Cleanup might be incomplete." << std::endl;
+        }
     }
 
     // Construct QEMU arguments
