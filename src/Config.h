@@ -86,11 +86,50 @@ namespace Config
 
     /**
      * @brief Finds OVMF firmware files in common distribution paths.
-     * @return true if both CODE and VARS files are found.
+     * Ensures CODE and VARS files match in size (4M or standard).
+     * @return true if both CODE and VARS files are found with matching sizes.
      */
     inline bool findOvmfPaths()
     {
-        // Find OVMF_CODE.fd
+        // Strategy: Try to find matching pairs (4M with 4M, or standard with standard)
+        // Priority order:
+        // 1. Try 4M variants first (better performance and compatibility)
+        // 2. Fall back to standard variants
+
+        // Structure to hold matching pairs
+        struct OvmfPair {
+            std::filesystem::path code;
+            std::filesystem::path vars;
+        };
+
+        std::vector<OvmfPair> possiblePairs = {
+            // 4M variants (all caps)
+            {"/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"},
+            // 4M variants (lowercase directory)
+            {"/usr/share/ovmf/OVMF_CODE_4M.fd", "/usr/share/ovmf/OVMF_VARS_4M.fd"},
+            // Standard variants (all caps)
+            {"/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd"},
+            // Standard variants (lowercase directory)
+            {"/usr/share/ovmf/OVMF_CODE.fd", "/usr/share/ovmf/OVMF_VARS.fd"},
+            // Alternative names
+            {"/usr/share/ovmf/OVMF.fd", "/usr/share/ovmf/OVMF_VARS.fd"},
+            // QEMU directory
+            {"/usr/share/qemu/OVMF.fd", "/usr/share/qemu/OVMF_VARS.fd"},
+            // EDK2 structure
+            {"/usr/share/edk2/ovmf/OVMF_CODE.fd", "/usr/share/edk2/ovmf/OVMF_VARS.fd"}
+        };
+
+        // Try to find the first matching pair where both files exist
+        for (const auto &pair : possiblePairs) {
+            if (std::filesystem::exists(pair.code) && std::filesystem::exists(pair.vars)) {
+                OvmfCodePath = pair.code;
+                OvmfVarsTemplatePath = pair.vars;
+                return true;
+            }
+        }
+
+        // If no matching pair found, fall back to old behavior
+        // (but this is now less likely to cause mismatches)
         bool foundCode = false;
         for (const auto &path : OvmfCodeSearchPaths) {
             if (std::filesystem::exists(path)) {
@@ -100,7 +139,6 @@ namespace Config
             }
         }
 
-        // Find OVMF_VARS.fd
         bool foundVars = false;
         for (const auto &path : OvmfVarsSearchPaths) {
             if (std::filesystem::exists(path)) {

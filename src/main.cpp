@@ -7,6 +7,7 @@
 #include "VirtualMachine.h"
 #include "ProfileManager.h"
 #include "HardwareDetection.h"
+#include "DeviceManager.h"
 #include "Config.h"
 #include <iostream>
 #include <string>
@@ -15,25 +16,150 @@
 #include <unistd.h>
 #include <fstream>
 #include <filesystem>
+#include <sys/wait.h>
+#include <cerrno>
 
 using namespace VxM;
 
+namespace fs = std::filesystem;
+
 // Global pointer for signal handler
 static VirtualMachine* g_vm = nullptr;
+
+// Global child PID for signal forwarding (parent-supervisor model)
+static volatile sig_atomic_t g_gotSignal = 0;
+static volatile sig_atomic_t g_lastSignal = 0;
+static pid_t g_childPid = -1;
+
+static std::string jsonEscape(std::string s)
+{
+    std::string out;
+    out.reserve(s.size() + 16);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '\"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buf[7];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += static_cast<char>(c);
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+static bool cmdlineHasStaticBinding()
+{
+    std::ifstream cmdLineFile("/proc/cmdline");
+    std::string cmdLineContent;
+    if (!std::getline(cmdLineFile, cmdLineContent)) {
+        return false;
+    }
+    return (cmdLineContent.find("vxm.static_bind=1") != std::string::npos) ||
+           (cmdLineContent.find("vxm.static_bind=yes") != std::string::npos) ||
+           (cmdLineContent.find("vxm.static_bind=true") != std::string::npos) ||
+           (cmdLineContent.find("vxm.static_bind=on") != std::string::npos);
+}
+
+static std::string normalizeBdf(std::string bdf)
+{
+    while (!bdf.empty() && (bdf.back() == '\n' || bdf.back() == '\r' || bdf.back() == ' ' || bdf.back() == '\t')) bdf.pop_back();
+    std::size_t i = 0;
+    while (i < bdf.size() && (bdf[i] == ' ' || bdf[i] == '\t')) ++i;
+    bdf = bdf.substr(i);
+
+    if (bdf.rfind("0000:", 0) == 0) {
+        return bdf;
+    }
+    if (bdf.find(':') != std::string::npos && bdf.size() >= 7) {
+        return "0000:" + bdf;
+    }
+    return bdf;
+}
+
+static std::string computeAudioFunctionBdf(const std::string &gpuBdf)
+{
+    std::string bdf = normalizeBdf(gpuBdf);
+    auto dot = bdf.find_last_of('.');
+    if (dot == std::string::npos) {
+        return "";
+    }
+    bdf.replace(dot + 1, 1, "1");
+    return bdf;
+}
+
+static void bestEffortReleaseVfioDevices()
+{
+    // This is a best-effort safety net for the parent-supervisor model.
+    // The VM child process performs binding and then execs into QEMU.
+    // The parent can no longer rely on the child's in-memory bound-device list,
+    // so we re-check sysfs and rebind to host drivers if vfio-pci is still attached.
+    try {
+        ProfileManager pm;
+        Profile profile = pm.loadProfile();
+
+        HardwareDetection hw;
+        GpuInfo gpu{};
+
+        if (!profile.selectedGpuPci.empty()) {
+            auto manual = hw.findGpuByString(profile.selectedGpuPci);
+            if (manual) {
+                gpu = *manual;
+            } else {
+                gpu = hw.findPassthroughGpu();
+            }
+        } else {
+            gpu = hw.findPassthroughGpu();
+        }
+
+        std::string gpuBdf = normalizeBdf(gpu.pciAddress.empty() ? profile.selectedGpuPci : gpu.pciAddress);
+        std::string audioBdf = normalizeBdf(!gpu.audioPciAddress.empty() ? gpu.audioPciAddress : computeAudioFunctionBdf(gpuBdf));
+
+        if (!gpuBdf.empty()) {
+            DeviceManager dm(gpuBdf);
+            if (dm.isBoundToVfio()) {
+                dm.rebindToHost();
+                std::cout << "[VxM] Released GPU " << gpuBdf << std::endl;
+            }
+        }
+
+        if (!audioBdf.empty()) {
+            DeviceManager am(audioBdf);
+            if (am.isBoundToVfio()) {
+                am.rebindToHost();
+                std::cout << "[VxM] Released GPU Audio " << audioBdf << std::endl;
+            }
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "[Warning] Best-effort VFIO release failed: " << e.what() << std::endl;
+    }
+}
 
 void signalHandler(int signum)
 {
     // Signal handlers should be async-signal-safe
     // Using write() instead of std::cout for safety
-    const char msg[] = "\n[VxM] Interrupt received, cleaning up...\n";
+    const char msg[] = "\n[VxM] Interrupt received, forwarding to VM...\n";
     write(STDOUT_FILENO, msg, sizeof(msg) - 1);
 
-    if (g_vm) {
-        g_vm->cleanup();
-    }
+    g_gotSignal = 1;
+    g_lastSignal = signum;
 
-    // Use _exit() instead of exit() in signal handlers
-    _exit(128 + signum);
+    // Forward to child if we are supervising one.
+    // Do not call cleanup() here: it is not async-signal-safe.
+    if (g_childPid > 0) {
+        kill(g_childPid, signum);
+    }
 }
 
 void printUsage()
@@ -50,10 +176,15 @@ void printUsage()
               << "  fingerprint   Display the system fingerprint (DMI UUID).\n"
               << "  config        Update configuration and hardware profiles.\n"
               << "  reset         Remove all VxM files and configuration (clean slate).\n\n"
-              << "Options:\n"
-              << "  --set-gpu <PCI_ADDRESS>    Set the GPU for passthrough by PCI address.\n"
-              << "  --disable-static           Disable boot-time GPU seizure (Static Binding).\n"
-              << "  --json                     Output machine-readable JSON (status, list-gpus, fingerprint).\n";
+              << "Command options:\n"
+              << "  vxm list-gpus [--json]\n"
+              << "  vxm fingerprint [--json]\n"
+              << "  vxm status [--json]\n"
+              << "  vxm config --set-gpu <PCI_ADDRESS|NAME>\n"
+              << "  vxm config --disable-static\n\n"
+              << "Notes:\n"
+              << "  - 'start' requires root permissions.\n"
+              << "  - Use 'sudo -E vxm start' to preserve the user environment.\n";
 }
 
 // Helper to disable static binding via overlayroot-chroot
@@ -74,15 +205,177 @@ bool disableStaticBinding() {
                       "umount /dev /var/lib\"";
 
     int ret = std::system(cmd.c_str());
-    if (ret == 0) {
-        std::cout << "[VxM] Static binding DISABLED." << std::endl;
-        std::cout << "      The GPU will be returned to the host OS on the next boot." << std::endl;
-        std::cout << "      Please REBOOT your system." << std::endl;
-        return true;
-    } else {
-        std::cerr << "[Error] Failed to disable static binding. Command returned: " << ret << std::endl;
+    if (ret != 0) {
+        int exitCode = ret;
+        if (WIFEXITED(ret)) {
+            exitCode = WEXITSTATUS(ret);
+        }
+        std::cerr << "[Error] Failed to disable static binding. Command returned: " << exitCode << std::endl;
         return false;
     }
+
+    std::cout << "[VxM] Static binding DISABLED." << std::endl;
+    std::cout << "      The GPU will be returned to the host OS on the next boot." << std::endl;
+    std::cout << "      Please REBOOT your system." << std::endl;
+    return true;
+}
+
+static std::string currentDriverForBdf(const std::string &bdf)
+{
+    std::string full = normalizeBdf(bdf);
+    if (full.empty()) return "";
+
+    fs::path driverLink = fs::path("/sys/bus/pci/devices") / full / "driver";
+    std::error_code ec;
+    if (!fs::exists(driverLink, ec)) {
+        return "";
+    }
+
+    fs::path target = fs::read_symlink(driverLink, ec);
+    if (ec) {
+        return "";
+    }
+    return target.filename().string();
+}
+
+// Signal handler for supervisor process to forward signals to QEMU
+static volatile sig_atomic_t g_supervisorGotSignal = 0;
+static volatile pid_t g_qemuPid = -1;
+
+static void supervisorSignalHandler(int signum)
+{
+    g_supervisorGotSignal = signum;
+
+    // Forward signal to QEMU grandchild
+    if (g_qemuPid > 0) {
+        kill(g_qemuPid, signum);
+    }
+}
+
+static int runStartSupervised(VirtualMachine &vm)
+{
+    // Check for root permissions required for GPU binding
+    if (geteuid() != 0) {
+        std::cerr << "[Error] The 'start' command requires root permissions to bind GPU devices.\n"
+                  << "        Please run: sudo -E vxm start\n"
+                  << "        (The -E flag preserves your user environment)" << std::endl;
+        return 1;
+    }
+
+    // Warn if running as root without preserving user environment
+    const char* sudoUser = std::getenv("SUDO_USER");
+    const char* home = std::getenv("HOME");
+    if (sudoUser && home && std::string(home) == "/root") {
+        std::cerr << "[Warning] Running as root with HOME=/root\n"
+                  << "          VxM files should be in the user's home directory.\n"
+                  << "          Please use: sudo -E vxm start\n"
+                  << "          Or set HOME manually: sudo HOME=/home/" << sudoUser << " vxm start" << std::endl;
+        return 1;
+    }
+
+    if (!vm.checkRequirements()) {
+        return 1;
+    }
+
+    // Parent-supervisor model:
+    // - Supervisor child performs binding and execs into QEMU.
+    // - Supervisor catches signals, forwards them to QEMU, and waits for QEMU to exit.
+    // - Parent forwards signals to supervisor and performs best-effort cleanup after supervisor exits.
+    pid_t supervisorPid = fork();
+    if (supervisorPid < 0) {
+        std::cerr << "[Error] Failed to fork supervisor process." << std::endl;
+        return 1;
+    }
+
+    if (supervisorPid == 0) {
+        // Supervisor process:
+        // Install signal handlers to forward signals to QEMU and wait for it to exit
+        std::signal(SIGINT, supervisorSignalHandler);
+        std::signal(SIGTERM, supervisorSignalHandler);
+
+        // Fork again to create QEMU process
+        pid_t qemuPid = fork();
+        if (qemuPid < 0) {
+            std::cerr << "[Error] Failed to fork QEMU process." << std::endl;
+            _exit(1);
+        }
+
+        if (qemuPid == 0) {
+            // QEMU process (grandchild):
+            // Reset signal handlers to default for QEMU
+            std::signal(SIGINT, SIG_DFL);
+            std::signal(SIGTERM, SIG_DFL);
+
+            try {
+                vm.start();
+            } catch (const std::exception &e) {
+                std::cerr << "[Error] VM Start Failed: " << e.what() << std::endl;
+                _exit(1);
+            }
+            _exit(127); // Should not be reached if execvp succeeds
+        }
+
+        // Supervisor: Store QEMU PID and wait for it to exit
+        g_qemuPid = qemuPid;
+
+        int qemuStatus = 0;
+        while (true) {
+            pid_t w = waitpid(qemuPid, &qemuStatus, 0);
+            if (w == -1) {
+                if (errno == EINTR) {
+                    // Signal received, but we already forwarded it to QEMU
+                    // Continue waiting for QEMU to exit
+                    continue;
+                }
+                std::cerr << "[Error] Supervisor waitpid() failed." << std::endl;
+                break;
+            }
+            break;
+        }
+
+        // QEMU has exited, now supervisor can exit safely
+        if (WIFEXITED(qemuStatus)) {
+            _exit(WEXITSTATUS(qemuStatus));
+        }
+        if (WIFSIGNALED(qemuStatus)) {
+            int sig = WTERMSIG(qemuStatus);
+            _exit(128 + sig);
+        }
+        _exit(1);
+    }
+
+    // Parent process:
+    g_childPid = supervisorPid;
+
+    int status = 0;
+    while (true) {
+        pid_t w = waitpid(supervisorPid, &status, 0);
+        if (w == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            std::cerr << "[Error] Parent waitpid() failed." << std::endl;
+            break;
+        }
+        break;
+    }
+
+    // Supervisor has exited, which means QEMU has finished its shutdown.
+    // Now it's safe to perform cleanup and unbind devices.
+    bestEffortReleaseVfioDevices();
+
+    // Also invoke VM cleanup for lock removal and any other non-VFIO cleanups that may be tracked in this process.
+    // If the parent did not bind devices itself, this may be a no-op, but it is safe here.
+    vm.cleanup();
+
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        return 128 + sig;
+    }
+    return 1;
 }
 
 int main(int argc, char *argv[])
@@ -113,14 +406,14 @@ int main(int argc, char *argv[])
                 for (size_t i = 0; i < gpus.size(); ++i) {
                     const auto &gpu = gpus[i];
                     std::cout << "  {\n";
-                    std::cout << "    \"pci\": \"" << gpu.pciAddress << "\",\n";
-                    std::cout << "    \"name\": \"" << gpu.name << "\",\n";
+                    std::cout << "    \"pci\": \"" << jsonEscape(gpu.pciAddress) << "\",\n";
+                    std::cout << "    \"name\": \"" << jsonEscape(gpu.name) << "\",\n";
                     std::cout << "    \"is_boot_vga\": " << (gpu.isBootVga ? "true" : "false") << ",\n";
-                    std::cout << "    \"vendor_id\": \"" << gpu.vendorId << "\",\n";
-                    std::cout << "    \"device_id\": \"" << gpu.deviceId << "\",\n";
+                    std::cout << "    \"vendor_id\": \"" << jsonEscape(gpu.vendorId) << "\",\n";
+                    std::cout << "    \"device_id\": \"" << jsonEscape(gpu.deviceId) << "\",\n";
                     std::cout << "    \"needs_rom\": " << (gpu.needsRom ? "true" : "false");
                     if (gpu.needsRom && !gpu.romPath.empty()) {
-                        std::cout << ",\n    \"rom_path\": \"" << gpu.romPath << "\"";
+                        std::cout << ",\n    \"rom_path\": \"" << jsonEscape(gpu.romPath) << "\"";
                     }
                     std::cout << "\n  }";
                     if (i < gpus.size() - 1) std::cout << ",";
@@ -141,7 +434,7 @@ int main(int argc, char *argv[])
         } else if (command == "fingerprint") {
             VxM::HardwareDetection hw;
             if (argc > 2 && std::string(argv[2]) == "--json") {
-                std::cout << "{\"fingerprint\": \"" << hw.getSystemFingerprint() << "\"}" << std::endl;
+                std::cout << "{\"fingerprint\": \"" << jsonEscape(hw.getSystemFingerprint()) << "\"}" << std::endl;
             } else {
                 std::cout << hw.getSystemFingerprint() << std::endl;
             }
@@ -171,51 +464,22 @@ int main(int argc, char *argv[])
             }
 
             std::cerr << "Usage: vxm config [options]\n"
-                      << "  --set-gpu <PCI_ID>     Set specific GPU for passthrough\n"
-                      << "  --disable-static       Disable boot-time GPU seizure (Static Binding)" << std::endl;
+                      << "  --set-gpu <PCI_ID|NAME>     Set specific GPU for passthrough\n"
+                      << "  --disable-static            Disable boot-time GPU seizure (Static Binding)" << std::endl;
             return 1;
 
         } else if (command == "start") {
-            // Check for root permissions required for GPU binding
-            if (geteuid() != 0) {
-                std::cerr << "[Error] The 'start' command requires root permissions to bind GPU devices.\n"
-                          << "        Please run: sudo -E vxm start\n"
-                          << "        (The -E flag preserves your user environment)" << std::endl;
-                return 1;
-            }
-
-            // Warn if running as root without preserving user environment
-            const char* sudoUser = std::getenv("SUDO_USER");
-            const char* home = std::getenv("HOME");
-            if (sudoUser && home && std::string(home) == "/root") {
-                std::cerr << "[Warning] Running as root with HOME=/root\n"
-                          << "          VxM files should be in the user's home directory.\n"
-                          << "          Please use: sudo -E vxm start\n"
-                          << "          Or set HOME manually: sudo HOME=/home/" << sudoUser << " vxm start" << std::endl;
-                return 1;
-            }
-
-            if (vm.checkRequirements()) {
-                vm.start();
-            }
+            return runStartSupervised(vm);
         } else if (command == "status") {
             bool jsonOutput = (argc > 2 && std::string(argv[2]) == "--json");
             std::string state = "stopped";
             pid_t pid = 0;
             std::string gpu;
-            
+            std::string gpuDriver;
+            std::string audioDriver;
+
             // Check for Static Binding by reading kernel command line
-            bool staticActive = false;
-            std::ifstream cmdLineFile("/proc/cmdline");
-            std::string cmdLineContent;
-            if (std::getline(cmdLineFile, cmdLineContent)) {
-                if (cmdLineContent.find("vxm.static_bind=1") != std::string::npos ||
-                    cmdLineContent.find("vxm.static_bind=yes") != std::string::npos ||
-                    cmdLineContent.find("vxm.static_bind=true") != std::string::npos ||
-                    cmdLineContent.find("vxm.static_bind=on") != std::string::npos) {
-                    staticActive = true;
-                }
-            }
+            bool staticActive = cmdlineHasStaticBinding();
 
             // Check if VxM is running by reading the lock file
             if (std::filesystem::exists(Config::InstanceLockFile)) {
@@ -225,7 +489,7 @@ int main(int argc, char *argv[])
                     if (kill(pid, 0) == 0) {
                         state = "running";
 
-                        // Check which GPU is bound to vfio-pci
+                        // Check which GPU is configured
                         ProfileManager pm;
                         Profile profile = pm.loadProfile();
                         gpu = profile.selectedGpuPci;
@@ -236,15 +500,43 @@ int main(int argc, char *argv[])
                 }
             }
 
+            // Hardware binding state (best-effort, independent of VM process)
+            try {
+                HardwareDetection hw;
+                GpuInfo gi{};
+
+                if (!gpu.empty()) {
+                    auto m = hw.findGpuByString(gpu);
+                    if (m) gi = *m;
+                } else {
+                    gi = hw.findPassthroughGpu();
+                    gpu = gi.pciAddress;
+                }
+
+                if (!gi.pciAddress.empty()) {
+                    gpuDriver = currentDriverForBdf(gi.pciAddress);
+                }
+                if (!gi.audioPciAddress.empty()) {
+                    audioDriver = currentDriverForBdf(gi.audioPciAddress);
+                }
+            } catch (...) {
+            }
+
             if (jsonOutput) {
                 std::cout << "{\n";
-                std::cout << "  \"state\": \"" << state << "\",\n";
+                std::cout << "  \"state\": \"" << jsonEscape(state) << "\",\n";
                 std::cout << "  \"static_binding\": " << (staticActive ? "true" : "false");
                 if (pid > 0) {
                     std::cout << ",\n  \"pid\": " << pid;
                 }
                 if (!gpu.empty()) {
-                    std::cout << ",\n  \"gpu\": \"" << gpu << "\"";
+                    std::cout << ",\n  \"gpu\": \"" << jsonEscape(gpu) << "\"";
+                }
+                if (!gpuDriver.empty()) {
+                    std::cout << ",\n  \"gpu_driver\": \"" << jsonEscape(gpuDriver) << "\"";
+                }
+                if (!audioDriver.empty()) {
+                    std::cout << ",\n  \"gpu_audio_driver\": \"" << jsonEscape(audioDriver) << "\"";
                 }
                 std::cout << "\n}" << std::endl;
             } else {
@@ -254,10 +546,8 @@ int main(int argc, char *argv[])
                     // Try to get more details from /proc
                     std::string procPath = "/proc/" + std::to_string(pid) + "/cmdline";
                     if (std::filesystem::exists(procPath)) {
-                        std::ifstream cmdline(procPath);
-                        std::string cmd;
-                        std::getline(cmdline, cmd);
-                        // Replace null bytes with spaces for readability
+                        std::ifstream cmdline(procPath, std::ios::binary);
+                        std::string cmd((std::istreambuf_iterator<char>(cmdline)), std::istreambuf_iterator<char>());
                         for (char &c : cmd) {
                             if (c == '\0') c = ' ';
                         }
@@ -280,6 +570,13 @@ int main(int argc, char *argv[])
 
                 if (staticActive) {
                     std::cout << "      Mode: Static Binding (Enabled in Kernel Cmdline)" << std::endl;
+                }
+
+                if (!gpuDriver.empty()) {
+                    std::cout << "      GPU Driver: " << gpuDriver << std::endl;
+                }
+                if (!audioDriver.empty()) {
+                    std::cout << "      GPU Audio Driver: " << audioDriver << std::endl;
                 }
             }
             return 0;
@@ -309,14 +606,7 @@ int main(int argc, char *argv[])
 
                 // Clean up static binding if enabled
                 // Check if currently enabled via cmdline
-                std::ifstream cmdLineFile("/proc/cmdline");
-                std::string cmdLineContent;
-                bool needsCleanup = false;
-                if (std::getline(cmdLineFile, cmdLineContent)) {
-                    if (cmdLineContent.find("vxm.static_bind=1") != std::string::npos) {
-                        needsCleanup = true;
-                    }
-                }
+                bool needsCleanup = cmdlineHasStaticBinding();
 
                 if (needsCleanup) {
                     // Attempt to disable it
@@ -336,7 +626,20 @@ int main(int argc, char *argv[])
             return 1;
         }
     } catch (const std::exception &e) {
-        std::cerr << "[Fatal] " << e.what() << std::endl;
+        // Check if --json flag was passed to determine output format
+        bool jsonMode = false;
+        for (int i = 1; i < argc; i++) {
+            if (std::string(argv[i]) == "--json") {
+                jsonMode = true;
+                break;
+            }
+        }
+
+        if (jsonMode) {
+            std::cout << "{\"error\": \"" << jsonEscape(e.what()) << "\"}" << std::endl;
+        } else {
+            std::cerr << "[Fatal] " << e.what() << std::endl;
+        }
         return 1;
     }
 

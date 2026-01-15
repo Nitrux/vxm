@@ -10,7 +10,6 @@
 #include <string>
 #include <filesystem>
 #include <cstdint>
-#include "HardwareDetection.h"
 
 namespace VxM
 {
@@ -55,7 +54,6 @@ public:
      * Validates against actual hardware before saving.
      */
     bool selectGpu(const std::string &gpuQuery);
-
 private:
     std::filesystem::path m_configPath;
 };

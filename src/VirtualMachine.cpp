@@ -20,13 +20,21 @@
 #include <cstdlib>  // system
 #include <cctype>   // isdigit
 #include <signal.h> // kill
+#include <cerrno>   // errno
+#include <cstring>  // strerror
 
 namespace fs = std::filesystem;
 
 namespace VxM
 {
 
-VirtualMachine::VirtualMachine() : m_tpmPid(-1)
+VirtualMachine::VirtualMachine()
+    : m_tpmPid(-1)
+    , m_ddcEnabled(false)
+    , m_ddcMonitor()
+    , m_ddcHostInput(0x0F)
+    , m_originalHugepages(0)
+    , m_hugepagesModified(false)
 {
 }
 
@@ -43,7 +51,7 @@ void VirtualMachine::cleanup()
         switchMonitorInput(m_ddcMonitor, m_ddcHostInput);
     }
 
-    if (m_boundDevices.empty() && m_tpmPid == -1) {
+    if (m_boundDevices.empty() && m_tpmPid == -1 && !m_hugepagesModified) {
         return;
     }
 
@@ -67,6 +75,20 @@ void VirtualMachine::cleanup()
         kill(m_tpmPid, SIGTERM);
         waitpid(m_tpmPid, nullptr, 0);
         m_tpmPid = -1;
+    }
+
+    // Restore hugepages to original value if we modified them
+    if (m_hugepagesModified) {
+        std::cout << "[VxM] Restoring hugepages to original value (" << m_originalHugepages << ")..." << std::endl;
+        std::ofstream hugepagesFile("/proc/sys/vm/nr_hugepages");
+        if (hugepagesFile) {
+            hugepagesFile << m_originalHugepages;
+            hugepagesFile.close();
+            std::cout << "[VxM] Hugepages restored." << std::endl;
+        } else {
+            std::cerr << "[Warning] Failed to restore hugepages. They will remain at current allocation." << std::endl;
+        }
+        m_hugepagesModified = false;
     }
 
     // Release instance lock
@@ -154,44 +176,57 @@ bool VirtualMachine::checkRequirements() const
 
 bool VirtualMachine::validateIommuGroup(const std::string &pciAddress) const
 {
-    // Find the IOMMU group for this device
-    std::string fullAddress = pciAddress;
-    if (fullAddress.find(':') != std::string::npos && fullAddress.length() < 10) {
-        fullAddress = "0000:" + fullAddress;
-    }
+    try {
+        // Find the IOMMU group for this device
+        std::string fullAddress = pciAddress;
+        if (fullAddress.find(':') != std::string::npos && fullAddress.length() < 10) {
+            fullAddress = "0000:" + fullAddress;
+        }
 
-    fs::path devicePath = fs::path("/sys/bus/pci/devices") / fullAddress;
-    fs::path iommuGroupLink = devicePath / "iommu_group";
+        fs::path devicePath = fs::path("/sys/bus/pci/devices") / fullAddress;
+        fs::path iommuGroupLink = devicePath / "iommu_group";
 
-    if (!fs::exists(iommuGroupLink)) {
-        std::cerr << "[Error] Device " << pciAddress << " has no IOMMU group." << std::endl;
+        if (!fs::exists(iommuGroupLink)) {
+            std::cerr << "[Error] Device " << pciAddress << " has no IOMMU group." << std::endl;
+            return false;
+        }
+
+        // read_symlink returns a relative path, resolve it to absolute path
+        fs::path iommuGroupPath = fs::canonical(iommuGroupLink);
+        fs::path devicesInGroup = iommuGroupPath / "devices";
+
+        // Count devices in the IOMMU group
+        int deviceCount = 0;
+        for (const auto &entry : fs::directory_iterator(devicesInGroup)) {
+            deviceCount++;
+        }
+
+        // Ideally, the GPU and its audio function should be the only devices in the group
+        // Allow up to 4 devices (GPU + audio) as acceptable
+        // More than 4 means poor IOMMU isolation and passthrough will likely fail
+        if (deviceCount > 4) {
+            std::cerr << "[Error] IOMMU group contains " << deviceCount << " devices (expected 1-2)." << std::endl;
+            std::cerr << "        Devices in group:" << std::endl;
+            for (const auto &entry : fs::directory_iterator(devicesInGroup)) {
+                std::cerr << "        - " << entry.path().filename().string() << std::endl;
+            }
+            std::cerr << std::endl;
+            std::cerr << "        This GPU is NOT properly isolated for passthrough." << std::endl;
+            std::cerr << "        You may need to enable ACS override patches in the kernel." << std::endl;
+            return false;
+        }
+
+        return true;
+    } catch (const fs::filesystem_error &e) {
+        std::cerr << "[Error] Failed to resolve IOMMU group path: " << e.what() << std::endl;
+        return false;
+    } catch (const std::exception &e) {
+        std::cerr << "[Error] IOMMU validation failed: " << e.what() << std::endl;
         return false;
     }
-
-    // read_symlink returns a relative path, resolve it to absolute path
-    fs::path iommuGroupPath = fs::canonical(iommuGroupLink);
-    fs::path devicesInGroup = iommuGroupPath / "devices";
-
-    // Count devices in the IOMMU group
-    int deviceCount = 0;
-    for (const auto &entry : fs::directory_iterator(devicesInGroup)) {
-        deviceCount++;
-    }
-
-    // Ideally, the GPU and its audio function should be the only devices in the group
-    // Allow up to 2 devices (GPU + audio) as acceptable
-    if (deviceCount > 2) {
-        std::cerr << "[Warning] IOMMU group contains " << deviceCount << " devices." << std::endl;
-        std::cerr << "          Devices in group:" << std::endl;
-        for (const auto &entry : fs::directory_iterator(devicesInGroup)) {
-            std::cerr << "          - " << entry.path().filename().string() << std::endl;
-        }
-    }
-
-    return true;
 }
 
-bool VirtualMachine::acquireInstanceLock() const
+bool VirtualMachine::acquireInstanceLock()
 {
     // Check if lock file exists
     if (fs::exists(Config::InstanceLockFile)) {
@@ -225,17 +260,35 @@ bool VirtualMachine::acquireInstanceLock() const
     return true;
 }
 
-void VirtualMachine::releaseInstanceLock() const
+void VirtualMachine::releaseInstanceLock()
 {
     if (fs::exists(Config::InstanceLockFile)) {
         fs::remove(Config::InstanceLockFile);
     }
 }
 
-pid_t VirtualMachine::startTpmEmulator() const
+pid_t VirtualMachine::startTpmEmulator()
 {
     // Create TPM state directory
     fs::create_directories(Config::TpmStateDir);
+
+    // Get real user info if running under sudo
+    const char* sudoUid = std::getenv("SUDO_UID");
+    const char* sudoGid = std::getenv("SUDO_GID");
+    uid_t targetUid = 0;
+    gid_t targetGid = 0;
+    bool shouldFixOwnership = false;
+
+    if (sudoUid && sudoGid && geteuid() == 0) {
+        targetUid = std::stoul(sudoUid);
+        targetGid = std::stoul(sudoGid);
+        shouldFixOwnership = true;
+
+        // Fix ownership of TPM directory before swtpm runs
+        if (chown(Config::TpmStateDir.c_str(), targetUid, targetGid) != 0) {
+            std::cerr << "[Warning] Failed to set ownership of " << Config::TpmStateDir << std::endl;
+        }
+    }
 
     // Remove old socket if it exists
     if (fs::exists(Config::TpmSocketPath)) {
@@ -265,6 +318,22 @@ pid_t VirtualMachine::startTpmEmulator() const
     for (int i = 0; i < 20; i++) {
         if (fs::exists(Config::TpmSocketPath)) {
             std::cout << "[VxM] TPM emulator started (PID: " << pid << ")." << std::endl;
+
+            // Fix ownership of files created by swtpm
+            if (shouldFixOwnership) {
+                // Give swtpm a moment to create its state files
+                usleep(200000); // 200ms
+
+                // Recursively fix ownership of all TPM state files
+                try {
+                    for (const auto& entry : fs::recursive_directory_iterator(Config::TpmStateDir)) {
+                        chown(entry.path().c_str(), targetUid, targetGid);
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "[Warning] Failed to fix TPM file ownership: " << e.what() << std::endl;
+                }
+            }
+
             return pid;
         }
         usleep(100000); // 100ms
@@ -274,7 +343,7 @@ pid_t VirtualMachine::startTpmEmulator() const
     return pid;
 }
 
-void VirtualMachine::reserveHugepages(uint64_t ramGb) const
+void VirtualMachine::reserveHugepages(uint64_t ramGb)
 {
     // Calculate required 2MB hugepages
     // RAM in GB -> MB -> number of 2MB pages
@@ -304,6 +373,9 @@ void VirtualMachine::reserveHugepages(uint64_t ramGb) const
         std::cerr << "[Warning] Could not detect hugepages in /proc/meminfo." << std::endl;
         return;
     }
+
+    // Save original hugepage count for cleanup
+    m_originalHugepages = currentPages;
 
     if (currentPages >= requiredPages) {
         std::cout << "[VxM] Sufficient hugepages already allocated (" << currentPages << ")." << std::endl;
@@ -337,9 +409,14 @@ void VirtualMachine::reserveHugepages(uint64_t ramGb) const
 
     if (allocatedPages >= requiredPages) {
         std::cout << "[VxM] Successfully allocated " << allocatedPages << " hugepages." << std::endl;
+        m_hugepagesModified = true;
     } else {
         std::cerr << "[Warning] Could only allocate " << allocatedPages << " hugepages (requested " << requiredPages << ")." << std::endl;
         std::cerr << "          VM performance may be reduced. Consider freeing memory or running with fewer resources." << std::endl;
+        // Still mark as modified if we changed anything
+        if (allocatedPages > currentPages) {
+            m_hugepagesModified = true;
+        }
     }
 }
 
@@ -350,6 +427,11 @@ void VirtualMachine::initializeCrate()
     fs::create_directories(Config::IsoDir);
     fs::create_directories(Config::RomsDir);
     fs::create_directories(Config::TpmStateDir);
+
+    // Get real user info if running under sudo
+    const char* sudoUser = std::getenv("SUDO_USER");
+    const char* sudoUid = std::getenv("SUDO_UID");
+    const char* sudoGid = std::getenv("SUDO_GID");
 
     // Create C: Drive using fork/exec to avoid command injection
     if (!fs::exists(Config::WindowsImage)) {
@@ -375,6 +457,15 @@ void VirtualMachine::initializeCrate()
             if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
                 throw std::runtime_error("Failed to create disk image.");
             }
+
+            // Fix ownership of created disk image if running as root
+            if (sudoUser && sudoUid && sudoGid && geteuid() == 0) {
+                uid_t uid = std::stoul(sudoUid);
+                uid_t gid = std::stoul(sudoGid);
+                if (chown(Config::WindowsImage.c_str(), uid, gid) != 0) {
+                    std::cerr << "[Warning] Failed to set ownership of " << Config::WindowsImage << std::endl;
+                }
+            }
         }
     }
 
@@ -389,8 +480,6 @@ void VirtualMachine::initializeCrate()
 
         if (!hasCurl && !hasWget) {
             std::cerr << "[Error] Neither 'curl' nor 'wget' found. Please install one of them:" << std::endl;
-            std::cerr << "        sudo apt install curl   # or" << std::endl;
-            std::cerr << "        sudo apt install wget" << std::endl;
             throw std::runtime_error("No download tool available (curl/wget).");
         }
 
@@ -438,6 +527,12 @@ void VirtualMachine::initializeCrate()
         std::cout << "      https://www.microsoft.com/software-download/windows11" << std::endl;
         std::cout << "\n      For Windows 10:" << std::endl;
         std::cout << "      https://www.microsoft.com/software-download/windows10ISO" << std::endl;
+        
+        // Add specific recommendations for stripped-down Windows versions
+        std::cout << "\n      [Tip] For better VM performance, consider using a playbook to" << std::endl;
+        std::cout << "            debloat Windows, such as:" << std::endl;
+        std::cout << "            - AtlasOS: https://atlasos.net" << std::endl;
+        std::cout << "            - ReviOS:  https://revi.cc" << std::endl;
     }
 
     // Provide guidance about GPU ROM files for reset bug
@@ -457,6 +552,37 @@ void VirtualMachine::initializeCrate()
 
         fs::copy_file(Config::OvmfVarsTemplatePath, Config::OvmfVarsPath);
         std::cout << "[VxM] UEFI variables initialized from: " << Config::OvmfVarsTemplatePath.filename() << std::endl;
+
+        // Fix ownership of OVMF vars file if running as root
+        if (sudoUser && sudoUid && sudoGid && geteuid() == 0) {
+            uid_t uid = std::stoul(sudoUid);
+            uid_t gid = std::stoul(sudoGid);
+            if (chown(Config::OvmfVarsPath.c_str(), uid, gid) != 0) {
+                std::cerr << "[Warning] Failed to set ownership of " << Config::OvmfVarsPath << std::endl;
+            }
+        }
+    }
+
+    // Fix ownership of all VxM directories if running as root
+    if (sudoUser && sudoUid && sudoGid && geteuid() == 0) {
+        uid_t uid = std::stoul(sudoUid);
+        uid_t gid = std::stoul(sudoGid);
+
+        std::vector<fs::path> dirsToFix = {
+            Config::VxmDir,
+            Config::ImageDir,
+            Config::IsoDir,
+            Config::RomsDir,
+            Config::TpmStateDir
+        };
+
+        for (const auto& dir : dirsToFix) {
+            if (fs::exists(dir)) {
+                if (chown(dir.c_str(), uid, gid) != 0) {
+                    std::cerr << "[Warning] Failed to set ownership of " << dir << std::endl;
+                }
+            }
+        }
     }
 
     std::cout << "\n[VxM] Storage initialization complete!" << std::endl;
@@ -503,6 +629,14 @@ void VirtualMachine::start()
         mac = hw.generateMacAddress();
         profile.macAddress = mac;
         pm.saveProfile(profile);
+        
+        // Revert ownership to user
+        const char* sudoUser = std::getenv("SUDO_USER");
+        if (sudoUser) {
+             fs::path configPath = fs::path(Config::HomeDir) / ".config" / "vxm" / "config.json";
+             std::string cmd = "chown " + std::string(sudoUser) + ":" + std::string(sudoUser) + " " + configPath.string();
+             std::system(cmd.c_str());
+        }
     }
 
     std::cout << "[VxM] Hardware Profile:" << std::endl;
@@ -542,7 +676,7 @@ void VirtualMachine::start()
 
         if (answer == "y" || answer == "Y") {
             // Command to ADD the parameter to /etc/default/grub inside the writable chroot
-            // Logic: mount /dev (devtmpfs) and /var/lib (NX_VAR_LIB), check if param exists, if not prepend it to quoted value, then update.
+            // Logic: mount devtmpfs to /dev and auto-detect var-lib mount.
             // Using a simple sed replace on the default line structure.
             std::cout << "[VxM] Enabling Static Binding via overlayroot-chroot..." << std::endl;
             
@@ -550,7 +684,7 @@ void VirtualMachine::start()
                               "mount -t devtmpfs dev /dev && "
                               "mount -t auto $(findfs LABEL=NX_VAR_LIB) /var/lib && "
                               "if ! grep -q 'vxm.static_bind=1' /etc/default/grub; then "
-                              "sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=\\\"/&vxm.static_bind=1 /' /etc/default/grub; "
+                              "sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=[\"\x27]/&vxm.static_bind=1 /' /etc/default/grub; "
                               "fi && "
                               "update-grub && "
                               "update-initramfs -u && "
@@ -577,7 +711,11 @@ void VirtualMachine::start()
     m_boundDevices.push_back(gpu.pciAddress);
 
     if (!audioManager.bindToVfio()) {
-        std::cerr << "[Warning] Failed to bind GPU Audio to VFIO (Audio might fail)." << std::endl;
+        std::cerr << "[Error] Failed to bind GPU Audio to VFIO." << std::endl;
+        std::cerr << "        The Audio device shares the IOMMU group with the GPU." << std::endl;
+        std::cerr << "        The VM cannot start unless ALL devices in the group are isolated." << std::endl;
+        cleanup();
+        throw std::runtime_error("Failed to bind GPU Audio.");
     } else {
         m_boundDevices.push_back(gpu.audioPciAddress);
     }
@@ -587,7 +725,7 @@ void VirtualMachine::start()
 
     std::cout << "[VxM] Input Devices Detected:" << std::endl;
     for (const auto &dev : inputDevices) {
-        std::cout << "      " << (dev.type == "keyboard" ? "[KBD]" : "[MSE]") << " " << dev.path << std::endl;
+        std::cout << "      " << (dev.type == InputType::Keyboard ? "[KBD]" : "[MSE]") << " " << dev.path << std::endl;
     }
 
     if (inputDevices.empty()) {
@@ -685,36 +823,55 @@ void VirtualMachine::start()
     args.push_back("-device");
     args.push_back("hda-duplex,audiodev=snd0");
 
+    // USB Controller (always present for USB device passthrough)
+    args.push_back("-device"); args.push_back("nec-usb-xhci,id=xhci");
+
     // Input passthrough using evdev
     if (!inputDevices.empty()) {
         auto inputArgs = inputMgr.generateQemuArgs(inputDevices);
         args.insert(args.end(), inputArgs.begin(), inputArgs.end());
     } else {
         // Fallback to USB tablet if no input devices detected
-        args.push_back("-device"); args.push_back("nec-usb-xhci,id=xhci");
         args.push_back("-device"); args.push_back("usb-tablet,bus=xhci.0");
     }
 
     // Looking Glass IVSHMEM support (for windowed mode)
+    // IMPORTANT: -object must come BEFORE -device that references it
     if (profile.lookingGlassEnabled) {
         if (detectLookingGlass()) {
             // Check for kvmfr device first (better performance)
             if (fs::exists("/dev/kvmfr0")) {
                 std::cout << "[VxM] Looking Glass: Using kvmfr kernel module" << std::endl;
-                args.push_back("-device");
-                args.push_back("ivshmem-plain,memdev=ivshmem,bus=pcie.0");
+
+                // Fix permissions for Looking Glass client access
+                const char* sudoUser = std::getenv("SUDO_USER");
+                const char* sudoUid = std::getenv("SUDO_UID");
+                const char* sudoGid = std::getenv("SUDO_GID");
+                if (sudoUser && sudoUid && sudoGid && geteuid() == 0) {
+                    uid_t uid = std::stoul(sudoUid);
+                    gid_t gid = std::stoul(sudoGid);
+                    if (chown("/dev/kvmfr0", uid, gid) != 0) {
+                        std::cerr << "[Warning] Failed to set ownership of /dev/kvmfr0" << std::endl;
+                        std::cerr << "          Looking Glass client may not have access." << std::endl;
+                    } else {
+                        std::cout << "[VxM] Set /dev/kvmfr0 ownership to " << sudoUser << std::endl;
+                    }
+                }
+
                 args.push_back("-object");
                 args.push_back("memory-backend-file,id=ivshmem,share=on,mem-path=/dev/kvmfr0,size=" +
                                std::to_string(Config::LookingGlassShmSizeMb) + "M");
+                args.push_back("-device");
+                args.push_back("ivshmem-plain,memdev=ivshmem,bus=pcie.0");
             } else if (createLookingGlassShm(Config::LookingGlassShmSizeMb)) {
                 // Fallback to /dev/shm
                 std::cout << "[VxM] Looking Glass: Using shared memory file" << std::endl;
-                args.push_back("-device");
-                args.push_back("ivshmem-plain,memdev=ivshmem,bus=pcie.0");
                 args.push_back("-object");
                 args.push_back("memory-backend-file,id=ivshmem,share=on,mem-path=" +
                                Config::LookingGlassShmPath.string() + ",size=" +
                                std::to_string(Config::LookingGlassShmSizeMb) + "M");
+                args.push_back("-device");
+                args.push_back("ivshmem-plain,memdev=ivshmem,bus=pcie.0");
             }
         } else {
             std::cerr << "[Warning] Looking Glass enabled but no IVSHMEM support available." << std::endl;
@@ -735,21 +892,25 @@ void VirtualMachine::start()
         }
     }
 
-    // Execute
+    // Execute QEMU - this function is called from the supervisor process,
+    // which has already forked. We just exec QEMU directly here.
     std::cout << "[VxM] Igniting..." << std::endl;
+    std::cout << "      QEMU starting with PID: " << getpid() << std::endl;
 
-    // prepare argv for execvp
+    // Prepare argv for execvp
     std::vector<char*> argv;
     for (const auto &arg : args) {
         argv.push_back(const_cast<char*>(arg.c_str()));
     }
     argv.push_back(nullptr);
 
+    // Exec QEMU - this replaces the current process
+    // If successful, this function never returns
     execvp(argv[0], argv.data());
 
     // If we reach here, exec failed
-    std::cerr << "[Error] Failed to start QEMU execution." << std::endl;
-    exit(1);
+    std::cerr << "[Error] Failed to execute QEMU: " << strerror(errno) << std::endl;
+    throw std::runtime_error("Failed to execute QEMU");
 }
 
 bool VirtualMachine::detectLookingGlass() const
@@ -802,6 +963,13 @@ bool VirtualMachine::createLookingGlassShm(uint64_t sizeMb) const
                     fs::perms::owner_read | fs::perms::owner_write |
                     fs::perms::group_read | fs::perms::group_write);
 
+    // Give user access
+    const char* sudoUser = std::getenv("SUDO_USER");
+    if (sudoUser) {
+        std::string cmd = "chown " + std::string(sudoUser) + ":" + std::string(sudoUser) + " " + Config::LookingGlassShmPath.string();
+        std::system(cmd.c_str());
+    }
+
     std::cout << "[VxM] Looking Glass shared memory created: " << Config::LookingGlassShmPath
               << " (" << sizeMb << " MB)" << std::endl;
     return true;
@@ -821,7 +989,7 @@ bool VirtualMachine::switchMonitorInput(const std::string &monitor, uint8_t inpu
     cmd << "ddcutil ";
 
     // If monitor looks like a bus number, use --bus, otherwise try --display
-    if (!monitor.empty() && std::isdigit(monitor[0])) {
+    if (!monitor.empty() && std::isdigit(static_cast<unsigned char>(monitor[0]))) {
         cmd << "--bus " << monitor;
     } else if (!monitor.empty()) {
         cmd << "--display " << monitor;

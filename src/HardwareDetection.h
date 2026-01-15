@@ -17,21 +17,21 @@ namespace VxM
 
 struct GpuInfo
 {
-    std::string pciAddress;      // e.g., "0000:03:00.0"
-    std::string audioPciAddress; // e.g., "0000:03:00.1"
-    std::string name;            // e.g., "NVIDIA Corporation AD102 [GeForce RTX 4090]"
-    std::string vendorId;        // e.g., "0x1002" for AMD, "0x10de" for NVIDIA
-    std::string deviceId;        // e.g., "0x67df" for RX 580
-    bool isBootVga;              // True if this is the primary host GPU
-    bool needsRom;               // True if GPU requires a patched ROM file (reset bug)
-    std::string romPath;         // Path to ROM file if needsRom is true
+    std::string pciAddress;           // Always full BDF format: "0000:BB:DD.F" (e.g., "0000:03:00.0")
+    std::string audioPciAddress;      // Full BDF of audio function: "0000:BB:DD.F" (e.g., "0000:03:00.1"), empty if none
+    std::string name;                 // Human-readable name (e.g., "NVIDIA Corporation AD102 [GeForce RTX 4090]")
+    std::string vendorId;             // Vendor ID with 0x prefix (e.g., "0x1002" for AMD, "0x10de" for NVIDIA)
+    std::string deviceId;             // Device ID with 0x prefix (e.g., "0x67df" for RX 580)
+    bool isBootVga = false;           // True if this is the primary/boot GPU
+    bool needsRom = false;            // True if GPU requires a patched ROM file (AMD reset bug)
+    std::string romPath;              // Path to ROM file if needsRom is true and ROM found
 };
 
 struct CpuInfo
 {
-    int allocatedCores;
-    int threadsPerCore;
-    bool isRyzen;
+    uint32_t allocatedCores = 0;
+    uint32_t threadsPerCore = 1;
+    bool isRyzen = false;
     std::string vendor;
 };
 

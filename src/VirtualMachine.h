@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <sys/types.h>  // pid_t
 
 namespace VxM
 {
@@ -32,19 +33,23 @@ public:
     void initializeCrate();
 
     /**
-     * @brief Starts the virtual machine (Starts QEMU).
-     * This function calls execvp and does not return on success.
+     * @brief Starts the virtual machine by forking and executing QEMU.
+     * The parent process waits for QEMU to exit and performs cleanup.
+     * This function returns after QEMU terminates.
      */
     void start();
 
     /**
      * @brief Cleanup bound devices (called on error or exit).
+     * Releases GPU bindings, stops TPM emulator, and switches monitor back to host.
      */
     void cleanup();
 
     /**
      * @brief Reset VxM by removing all created files and directories.
      * This removes the entire VxM directory including disks, ISOs, config, etc.
+     * Does NOT automatically disable static binding - use 'vxm config --disable-static' for that.
+     * Should not be called while a VM instance is running.
      */
     static void reset();
 
@@ -62,24 +67,25 @@ private:
      * @brief Acquires an instance lock to prevent multiple VMs running.
      * @return true if lock was acquired successfully.
      */
-    bool acquireInstanceLock() const;
+    bool acquireInstanceLock();
 
     /**
      * @brief Releases the instance lock file.
      */
-    void releaseInstanceLock() const;
+    void releaseInstanceLock();
 
     /**
      * @brief Starts the TPM 2.0 emulator (swtpm).
      * @return Process ID of swtpm, or -1 on failure.
      */
-    pid_t startTpmEmulator() const;
+    pid_t startTpmEmulator();
 
     /**
      * @brief Reserves hugepages for VM memory.
+     * Saves the original hugepage count for restoration in cleanup.
      * @param ramGb Amount of RAM in GB to reserve hugepages for.
      */
-    void reserveHugepages(uint64_t ramGb) const;
+    void reserveHugepages(uint64_t ramGb);
 
     /**
      * @brief Checks if Looking Glass kvmfr kernel module is available.
@@ -102,12 +108,16 @@ private:
      */
     bool switchMonitorInput(const std::string &monitor, uint8_t inputValue) const;
 
-    // Track bound devices for cleanup
-    mutable std::vector<std::string> m_boundDevices;
-    mutable pid_t m_tpmPid = -1;
-    mutable bool m_ddcEnabled = false;
-    mutable std::string m_ddcMonitor;
-    mutable uint8_t m_ddcHostInput = 0x0F;
+    // Track bound devices and state for cleanup
+    std::vector<std::string> m_boundDevices;
+    pid_t m_tpmPid;
+    bool m_ddcEnabled;
+    std::string m_ddcMonitor;
+    uint8_t m_ddcHostInput;
+
+    // Track hugepages for cleanup
+    uint64_t m_originalHugepages;
+    bool m_hugepagesModified;
 };
 
 } // namespace VxM
