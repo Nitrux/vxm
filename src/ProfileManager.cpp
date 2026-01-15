@@ -5,6 +5,7 @@
  */
 
 #include "ProfileManager.h"
+#include "HardwareDetection.h"
 #include <fstream>
 #include <iostream>
 #include <sstream>
