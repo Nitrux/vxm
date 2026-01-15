@@ -74,7 +74,6 @@ bool DeviceManager::bindToVfio()
             std::cerr << "        GPU is bound to " << currentDriver << " instead of vfio-pci." << std::endl;
             std::cerr << std::endl;
             std::cerr << "        Causes:" << std::endl;
-            std::cerr << "        - Missing 'iommu=pt' kernel parameter" << std::endl;
             std::cerr << "        - VFIO not configured in initramfs" << std::endl;
             std::cerr << "        - This is the primary/boot GPU\n" << std::endl;
             return false;

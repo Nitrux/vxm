@@ -33,8 +33,13 @@ Profile ProfileManager::loadProfile() const
             p.selectedGpuPci = line.substr(4);
         } else if (line.find("mac=") == 0) {
             p.macAddress = line.substr(4);
+        } else if (line.find("max_ram=") == 0) {
+            try {
+                p.maxRam = std::stoull(line.substr(8));
+            } catch (...) {
+                p.maxRam = 16; // Default on parse error
+            }
         }
-        // Add parsing for cpu/ram overrides here if needed
     }
     return p;
 }
@@ -52,7 +57,9 @@ void ProfileManager::saveProfile(const Profile &profile)
     if (!profile.macAddress.empty()) {
         file << "mac=" << profile.macAddress << "\n";
     }
-    // Save other fields...
+    if (profile.maxRam != 16) { // Only save if non-default
+        file << "max_ram=" << profile.maxRam << "\n";
+    }
     std::cout << "[VxM] Profile saved to " << m_configPath << std::endl;
 }
 

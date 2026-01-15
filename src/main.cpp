@@ -47,6 +47,7 @@ void printUsage()
               << "  start         Boot the virtual machine using the active hardware profile. (requires root)\n"
               << "  status        Show current VM status and hardware binding state.\n"
               << "  list-gpus     Scan system for available GPUs and display PCI addresses.\n"
+              << "  fingerprint   Display the system fingerprint (DMI UUID). Use --json for JSON output.\n"
               << "  config        Update configuration and hardware profiles.\n"
               << "  reset         Remove all VxM files and configuration (clean slate).\n\n"
               << "Options:\n"
@@ -81,6 +82,14 @@ int main(int argc, char *argv[])
                     std::cout << " [PRIMARY/HOST GPU - DO NOT USE FOR PASSTHROUGH]";
                 }
                 std::cout << std::endl;
+            }
+            return 0;
+        } else if (command == "fingerprint") {
+            VxM::HardwareDetection hw;
+            if (argc > 2 && std::string(argv[2]) == "--json") {
+                std::cout << "{\"fingerprint\": \"" << hw.getSystemFingerprint() << "\"}" << std::endl;
+            } else {
+                std::cout << hw.getSystemFingerprint() << std::endl;
             }
             return 0;
         } else if (command == "config") {

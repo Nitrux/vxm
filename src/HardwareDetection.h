@@ -65,14 +65,20 @@ public:
     CpuInfo detectCpuTopology() const;
 
     /**
-     * @brief Returns safe RAM allocation (50% of host).
+     * @brief Returns safe RAM allocation (50% of host, capped at maxGb).
+     * @param maxGb Maximum RAM cap in GB (default: 16)
      */
-    uint64_t getSafeRamAmount() const;
+    uint64_t getSafeRamAmount(uint64_t maxGb = 16) const;
 
     /**
      * @brief Generates a persistent-style MAC address.
      */
     std::string generateMacAddress() const;
+
+    /**
+     * @brief Returns the system fingerprint (DMI UUID).
+     */
+    std::string getSystemFingerprint() const;
 };
 
 } // namespace VxM

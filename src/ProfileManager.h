@@ -23,6 +23,7 @@ struct Profile
     int cpuCores = 0;
     bool overrideRam = false;
     uint64_t ramSize = 0;
+    uint64_t maxRam = 16;         // Maximum RAM cap in GB (default: 16)
 };
 
 class ProfileManager

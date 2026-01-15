@@ -364,7 +364,7 @@ CpuInfo HardwareDetection::detectCpuTopology() const
     return cpu;
 }
 
-uint64_t HardwareDetection::getSafeRamAmount() const
+uint64_t HardwareDetection::getSafeRamAmount(uint64_t maxGb) const
 {
     // Read MemTotal from /proc/meminfo
     std::ifstream meminfo("/proc/meminfo");
@@ -384,9 +384,9 @@ uint64_t HardwareDetection::getSafeRamAmount() const
     double gb = static_cast<double>(kb) / (1024.0 * 1024.0);
     uint64_t halfGb = static_cast<uint64_t>(gb / 2.0 + 0.5); // Round to nearest
 
-    // Cap at 16GB maximum (sufficient for gaming, prevents excessive allocation)
-    if (halfGb > 16) {
-        halfGb = 16;
+    // Cap at configurable maximum (prevents excessive allocation)
+    if (halfGb > maxGb) {
+        halfGb = maxGb;
     }
 
     // Ensure at least 4GB minimum
@@ -408,6 +408,32 @@ std::string HardwareDetection::generateMacAddress() const
     snprintf(mac, sizeof(mac), "00:60:2F:%02X:%02X:%02X",
              dis(gen), dis(gen), dis(gen));
     return std::string(mac);
+}
+
+std::string HardwareDetection::getSystemFingerprint() const
+{
+    // Read DMI UUID from sysfs
+    std::ifstream file("/sys/class/dmi/id/product_uuid");
+    std::string uuid;
+    if (file >> uuid) {
+        return uuid;
+    }
+
+    // Fallback: try reading from dmidecode output if sysfs fails
+    FILE* pipe = popen("dmidecode -s system-uuid 2>/dev/null", "r");
+    if (pipe) {
+        char buffer[128];
+        if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            uuid = buffer;
+            // Remove trailing newline
+            if (!uuid.empty() && uuid.back() == '\n') {
+                uuid.pop_back();
+            }
+        }
+        pclose(pipe);
+    }
+
+    return uuid;
 }
 
 } // namespace VxM
