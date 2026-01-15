@@ -39,6 +39,20 @@ Profile ProfileManager::loadProfile() const
             } catch (...) {
                 p.maxRam = 16; // Default on parse error
             }
+        } else if (line.find("looking_glass=") == 0) {
+            p.lookingGlassEnabled = (line.substr(14) == "true");
+        } else if (line.find("ddc_enabled=") == 0) {
+            p.ddcEnabled = (line.substr(12) == "true");
+        } else if (line.find("ddc_monitor=") == 0) {
+            p.ddcMonitor = line.substr(12);
+        } else if (line.find("ddc_host_input=") == 0) {
+            try {
+                p.ddcHostInput = static_cast<uint8_t>(std::stoul(line.substr(15), nullptr, 0));
+            } catch (...) {}
+        } else if (line.find("ddc_guest_input=") == 0) {
+            try {
+                p.ddcGuestInput = static_cast<uint8_t>(std::stoul(line.substr(16), nullptr, 0));
+            } catch (...) {}
         }
     }
     return p;
@@ -59,6 +73,17 @@ void ProfileManager::saveProfile(const Profile &profile)
     }
     if (profile.maxRam != 16) { // Only save if non-default
         file << "max_ram=" << profile.maxRam << "\n";
+    }
+    if (profile.lookingGlassEnabled) {
+        file << "looking_glass=true\n";
+    }
+    if (profile.ddcEnabled) {
+        file << "ddc_enabled=true\n";
+        if (!profile.ddcMonitor.empty()) {
+            file << "ddc_monitor=" << profile.ddcMonitor << "\n";
+        }
+        file << "ddc_host_input=0x" << std::hex << static_cast<int>(profile.ddcHostInput) << "\n";
+        file << "ddc_guest_input=0x" << std::hex << static_cast<int>(profile.ddcGuestInput) << "\n";
     }
     std::cout << "[VxM] Profile saved to " << m_configPath << std::endl;
 }

@@ -18,6 +18,7 @@
 #include <unistd.h> // execvp, fork
 #include <sys/wait.h>
 #include <cstdlib>  // system
+#include <cctype>   // isdigit
 #include <signal.h> // kill
 
 namespace fs = std::filesystem;
@@ -36,6 +37,12 @@ VirtualMachine::~VirtualMachine()
 
 void VirtualMachine::cleanup()
 {
+    // Switch monitor back to host input if DDC/CI was enabled
+    if (m_ddcEnabled && !m_ddcMonitor.empty()) {
+        std::cout << "[VxM] Switching monitor back to host input..." << std::endl;
+        switchMonitorInput(m_ddcMonitor, m_ddcHostInput);
+    }
+
     if (m_boundDevices.empty() && m_tpmPid == -1) {
         return;
     }
@@ -658,8 +665,45 @@ void VirtualMachine::start()
         args.push_back("-device"); args.push_back("usb-tablet,bus=xhci.0");
     }
 
+    // Looking Glass IVSHMEM support (for windowed mode)
+    if (profile.lookingGlassEnabled) {
+        if (detectLookingGlass()) {
+            // Check for kvmfr device first (better performance)
+            if (fs::exists("/dev/kvmfr0")) {
+                std::cout << "[VxM] Looking Glass: Using kvmfr kernel module" << std::endl;
+                args.push_back("-device");
+                args.push_back("ivshmem-plain,memdev=ivshmem,bus=pcie.0");
+                args.push_back("-object");
+                args.push_back("memory-backend-file,id=ivshmem,share=on,mem-path=/dev/kvmfr0,size=" +
+                               std::to_string(Config::LookingGlassShmSizeMb) + "M");
+            } else if (createLookingGlassShm(Config::LookingGlassShmSizeMb)) {
+                // Fallback to /dev/shm
+                std::cout << "[VxM] Looking Glass: Using shared memory file" << std::endl;
+                args.push_back("-device");
+                args.push_back("ivshmem-plain,memdev=ivshmem,bus=pcie.0");
+                args.push_back("-object");
+                args.push_back("memory-backend-file,id=ivshmem,share=on,mem-path=" +
+                               Config::LookingGlassShmPath.string() + ",size=" +
+                               std::to_string(Config::LookingGlassShmSizeMb) + "M");
+            }
+        } else {
+            std::cerr << "[Warning] Looking Glass enabled but no IVSHMEM support available." << std::endl;
+        }
+    }
+
     // Display output (VNC on port 5900)
     args.push_back("-vnc"); args.push_back(":0");
+
+    // DDC/CI monitor switching
+    if (profile.ddcEnabled && !profile.ddcMonitor.empty()) {
+        std::cout << "[VxM] DDC/CI: Switching monitor to guest input..." << std::endl;
+        if (switchMonitorInput(profile.ddcMonitor, profile.ddcGuestInput)) {
+            // Store DDC state for cleanup on crash/exit
+            m_ddcEnabled = true;
+            m_ddcMonitor = profile.ddcMonitor;
+            m_ddcHostInput = profile.ddcHostInput;
+        }
+    }
 
     // Execute
     std::cout << "[VxM] Igniting..." << std::endl;
@@ -676,6 +720,95 @@ void VirtualMachine::start()
     // If we reach here, exec failed
     std::cerr << "[Error] Failed to start QEMU execution." << std::endl;
     exit(1);
+}
+
+bool VirtualMachine::detectLookingGlass() const
+{
+    // Check for kvmfr device (Looking Glass kernel module)
+    if (fs::exists("/dev/kvmfr0")) {
+        return true;
+    }
+
+    // Try to load the module
+    int ret = std::system("modprobe kvmfr 2>/dev/null");
+    if (ret == 0 && fs::exists("/dev/kvmfr0")) {
+        return true;
+    }
+
+    // Check for /dev/shm support as fallback
+    if (fs::exists("/dev/shm")) {
+        return true;
+    }
+
+    return false;
+}
+
+bool VirtualMachine::createLookingGlassShm(uint64_t sizeMb) const
+{
+    // Calculate size in bytes
+    uint64_t sizeBytes = sizeMb * 1024 * 1024;
+
+    // Remove existing file if present
+    if (fs::exists(Config::LookingGlassShmPath)) {
+        fs::remove(Config::LookingGlassShmPath);
+    }
+
+    // Create the shared memory file using truncate
+    std::ofstream shmFile(Config::LookingGlassShmPath, std::ios::binary);
+    if (!shmFile) {
+        std::cerr << "[Error] Failed to create Looking Glass shared memory file." << std::endl;
+        return false;
+    }
+    shmFile.close();
+
+    // Truncate to required size
+    if (truncate(Config::LookingGlassShmPath.c_str(), sizeBytes) != 0) {
+        std::cerr << "[Error] Failed to resize Looking Glass shared memory." << std::endl;
+        return false;
+    }
+
+    // Set permissions (rw for owner and group)
+    fs::permissions(Config::LookingGlassShmPath,
+                    fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_read | fs::perms::group_write);
+
+    std::cout << "[VxM] Looking Glass shared memory created: " << Config::LookingGlassShmPath
+              << " (" << sizeMb << " MB)" << std::endl;
+    return true;
+}
+
+bool VirtualMachine::switchMonitorInput(const std::string &monitor, uint8_t inputValue) const
+{
+    // Check if ddcutil is available
+    if (std::system("command -v ddcutil >/dev/null 2>&1") != 0) {
+        std::cerr << "[Warning] ddcutil not found. Cannot switch monitor input." << std::endl;
+        std::cerr << "          Install with: sudo apt install ddcutil" << std::endl;
+        return false;
+    }
+
+    // Build ddcutil command
+    // ddcutil --bus <N> setvcp 0x60 <value>
+    std::stringstream cmd;
+    cmd << "ddcutil ";
+
+    // If monitor looks like a bus number, use --bus, otherwise try --display
+    if (!monitor.empty() && std::isdigit(monitor[0])) {
+        cmd << "--bus " << monitor;
+    } else if (!monitor.empty()) {
+        cmd << "--display " << monitor;
+    }
+
+    cmd << " setvcp 0x" << std::hex << static_cast<int>(Config::DdcInputSourceVcp)
+        << " 0x" << std::hex << static_cast<int>(inputValue)
+        << " 2>/dev/null";
+
+    int ret = std::system(cmd.str().c_str());
+    if (ret != 0) {
+        std::cerr << "[Warning] Failed to switch monitor input via DDC/CI." << std::endl;
+        return false;
+    }
+
+    return true;
 }
 
 void VirtualMachine::reset()

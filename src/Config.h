@@ -74,6 +74,16 @@ namespace Config
     // Audio backend
     const std::string AudioBackend = "pa"; // PulseAudio (works with PipeWire)
 
+    // Looking Glass (IVSHMEM) configuration
+    const std::filesystem::path LookingGlassShmPath = "/dev/shm/looking-glass";
+    const uint64_t LookingGlassShmSizeMb = 128; // 128MB for up to 4K resolution
+
+    // DDC/CI monitor input switching
+    // Common VCP code for input source is 0x60
+    // Input values vary by monitor, but common ones are:
+    // 0x0F = DisplayPort-1, 0x10 = DisplayPort-2, 0x11 = HDMI-1, 0x12 = HDMI-2
+    const uint8_t DdcInputSourceVcp = 0x60;
+
     /**
      * @brief Finds OVMF firmware files in common distribution paths.
      * @return true if both CODE and VARS files are found.

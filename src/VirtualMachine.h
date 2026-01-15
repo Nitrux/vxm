@@ -81,9 +81,33 @@ private:
      */
     void reserveHugepages(uint64_t ramGb) const;
 
+    /**
+     * @brief Checks if Looking Glass kvmfr kernel module is available.
+     * @return true if /dev/kvmfr0 exists or module can be loaded.
+     */
+    bool detectLookingGlass() const;
+
+    /**
+     * @brief Creates the Looking Glass shared memory file.
+     * @param sizeMb Size of the shared memory region in MB.
+     * @return true if shared memory was created successfully.
+     */
+    bool createLookingGlassShm(uint64_t sizeMb) const;
+
+    /**
+     * @brief Switches monitor input using DDC/CI.
+     * @param monitor Monitor identifier (e.g., bus number from ddcutil).
+     * @param inputValue The VCP input value to switch to.
+     * @return true if switch was successful.
+     */
+    bool switchMonitorInput(const std::string &monitor, uint8_t inputValue) const;
+
     // Track bound devices for cleanup
     mutable std::vector<std::string> m_boundDevices;
     mutable pid_t m_tpmPid = -1;
+    mutable bool m_ddcEnabled = false;
+    mutable std::string m_ddcMonitor;
+    mutable uint8_t m_ddcHostInput = 0x0F;
 };
 
 } // namespace VxM
