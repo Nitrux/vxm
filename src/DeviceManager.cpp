@@ -49,23 +49,13 @@ std::string DeviceManager::getDeviceId() const
 
 bool DeviceManager::isBoundToVfio() const
 {
-    // Check if device is bound to vfio-pci OR has driver_override set to vfio-pci.
-    // This prevents devices from being left in limbo state if bindToVfio() fails
-    // after setting driver_override but before the driver actually binds.
-    if (getCurrentDriver() == "vfio-pci") {
-        return true;
-    }
-
-    // Also check driver_override - if it's set to vfio-pci, we need cleanup
-    std::filesystem::path overridePath = m_sysPath / "driver_override";
-    std::string override = readSysfs(overridePath);
-
-    // Remove whitespace/newlines for comparison
-    if (!override.empty() && override.back() == '\n') {
-        override.pop_back();
-    }
-
-    return override == "vfio-pci";
+    // CRITICAL FIX: Only return true if the device is ACTUALLY bound to vfio-pci.
+    // Previously, this returned true if driver_override was set, even if binding failed.
+    // This caused a false positive where VxM would skip binding and QEMU would crash.
+    //
+    // The driver_override is just a hint to the kernel about which driver to prefer.
+    // The actual binding status is determined by the driver symlink.
+    return getCurrentDriver() == "vfio-pci";
 }
 
 std::string DeviceManager::getCurrentDriver() const

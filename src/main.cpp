@@ -102,28 +102,36 @@ static void bestEffortReleaseVfioDevices()
 {
     // This is a best-effort safety net for the parent-supervisor model.
     // The VM child process performs binding and then execs into QEMU.
-    // The parent can no longer rely on the child's in-memory bound-device list,
-    // so we re-check sysfs and rebind to host drivers if vfio-pci is still attached.
+    // We read the runtime state file to find out which devices were ACTUALLY bound,
+    // not what the config says (which might have changed while VM was running).
     try {
-        ProfileManager pm;
-        Profile profile = pm.loadProfile();
+        fs::path statePath = fs::path(Config::HomeDir) / "VxM" / ".runtime_state";
 
-        HardwareDetection hw;
-        GpuInfo gpu{};
+        std::string gpuBdf, audioBdf;
+        if (fs::exists(statePath)) {
+            std::ifstream stateFile(statePath);
+            pid_t tpmPid;
+            uint64_t hugepages;
 
-        if (!profile.selectedGpuPci.empty()) {
-            auto manual = hw.findGpuByString(profile.selectedGpuPci);
-            if (manual) {
-                gpu = *manual;
-            } else {
-                gpu = hw.findPassthroughGpu();
+            // Read runtime state: tpmPid, hugepages, gpuBdf, audioBdf
+            if (stateFile >> tpmPid >> hugepages) {
+                std::getline(stateFile, gpuBdf); // Consume newline
+                std::getline(stateFile, gpuBdf); // GPU BDF
+                std::getline(stateFile, audioBdf); // Audio BDF
             }
-        } else {
-            gpu = hw.findPassthroughGpu();
         }
 
-        std::string gpuBdf = normalizeBdf(gpu.pciAddress.empty() ? profile.selectedGpuPci : gpu.pciAddress);
-        std::string audioBdf = normalizeBdf(!gpu.audioPciAddress.empty() ? gpu.audioPciAddress : computeAudioFunctionBdf(gpuBdf));
+        // If runtime state is missing or incomplete, fall back to detection
+        // (but DO NOT use config file which may have changed)
+        if (gpuBdf.empty()) {
+            HardwareDetection hw;
+            GpuInfo gpu = hw.findPassthroughGpu();
+            gpuBdf = gpu.pciAddress;
+            audioBdf = gpu.audioPciAddress;
+        }
+
+        gpuBdf = normalizeBdf(gpuBdf);
+        audioBdf = normalizeBdf(audioBdf);
 
         if (!gpuBdf.empty()) {
             DeviceManager dm(gpuBdf);
@@ -281,9 +289,19 @@ static int runStartSupervised(VirtualMachine &vm)
     // - Supervisor child performs binding and execs into QEMU.
     // - Supervisor catches signals, forwards them to QEMU, and waits for QEMU to exit.
     // - Parent forwards signals to supervisor and performs best-effort cleanup after supervisor exits.
+
+    // CRITICAL FIX: Block signals before fork() to prevent race condition
+    // where signal arrives between fork() and setting g_qemuPid
+    sigset_t newmask, oldmask;
+    sigemptyset(&newmask);
+    sigaddset(&newmask, SIGINT);
+    sigaddset(&newmask, SIGTERM);
+    sigprocmask(SIG_BLOCK, &newmask, &oldmask);
+
     pid_t supervisorPid = fork();
     if (supervisorPid < 0) {
         std::cerr << "[Error] Failed to fork supervisor process." << std::endl;
+        sigprocmask(SIG_SETMASK, &oldmask, nullptr); // Restore signal mask
         return 1;
     }
 
@@ -293,7 +311,7 @@ static int runStartSupervised(VirtualMachine &vm)
         std::signal(SIGINT, supervisorSignalHandler);
         std::signal(SIGTERM, supervisorSignalHandler);
 
-        // Fork again to create QEMU process
+        // Fork again to create QEMU process (signals still blocked)
         pid_t qemuPid = fork();
         if (qemuPid < 0) {
             std::cerr << "[Error] Failed to fork QEMU process." << std::endl;
@@ -306,6 +324,9 @@ static int runStartSupervised(VirtualMachine &vm)
             std::signal(SIGINT, SIG_DFL);
             std::signal(SIGTERM, SIG_DFL);
 
+            // Unblock signals for QEMU
+            sigprocmask(SIG_SETMASK, &oldmask, nullptr);
+
             try {
                 vm.start();
             } catch (const std::exception &e) {
@@ -315,22 +336,53 @@ static int runStartSupervised(VirtualMachine &vm)
             _exit(127); // Should not be reached if execvp succeeds
         }
 
-        // Supervisor: Store QEMU PID and wait for it to exit
+        // Supervisor: Store QEMU PID BEFORE unblocking signals (prevents race)
         g_qemuPid = qemuPid;
 
+        // Now unblock signals - handler can safely forward to QEMU
+        sigprocmask(SIG_SETMASK, &oldmask, nullptr);
+
         int qemuStatus = 0;
+        int gracefulAttempts = 0;
+        const int MAX_GRACEFUL_ATTEMPTS = 150; // 15 seconds total (100ms * 150)
+        bool forcedKill = false;
+
         while (true) {
-            pid_t w = waitpid(qemuPid, &qemuStatus, 0);
-            if (w == -1) {
-                if (errno == EINTR) {
-                    // Signal received, but we already forwarded it to QEMU
-                    // Continue waiting for QEMU to exit
-                    continue;
-                }
-                std::cerr << "[Error] Supervisor waitpid() failed." << std::endl;
+            pid_t w = waitpid(qemuPid, &qemuStatus, WNOHANG);
+            if (w == qemuPid) {
+                // QEMU has exited
                 break;
             }
-            break;
+            if (w == -1) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                std::cerr << "[Error] Supervisor waitpid() failed: " << strerror(errno) << std::endl;
+                break;
+            }
+
+            // QEMU is still running (w == 0)
+            if (g_supervisorGotSignal != 0) {
+                gracefulAttempts++;
+                if (gracefulAttempts >= MAX_GRACEFUL_ATTEMPTS) {
+                    // QEMU refused to die gracefully, escalate to SIGKILL
+                    const char msg[] = "[VxM] QEMU did not respond to shutdown signal, forcing termination...\n";
+                    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+                    kill(qemuPid, SIGKILL);
+                    forcedKill = true;
+                    // Now block until it dies
+                    waitpid(qemuPid, &qemuStatus, 0);
+                    break;
+                }
+            }
+
+            // Sleep 100ms before checking again
+            usleep(100000);
+        }
+
+        if (forcedKill) {
+            const char msg[] = "[VxM] QEMU was forcefully terminated.\n";
+            write(STDOUT_FILENO, msg, sizeof(msg) - 1);
         }
 
         // QEMU has exited, now supervisor can exit safely
@@ -344,8 +396,11 @@ static int runStartSupervised(VirtualMachine &vm)
         _exit(1);
     }
 
-    // Parent process:
+    // Parent process: Store supervisor PID BEFORE unblocking signals
     g_childPid = supervisorPid;
+
+    // Unblock signals now that PID is stored
+    sigprocmask(SIG_SETMASK, &oldmask, nullptr);
 
     int status = 0;
     while (true) {

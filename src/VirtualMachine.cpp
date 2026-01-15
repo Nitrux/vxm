@@ -91,12 +91,19 @@ void VirtualMachine::cleanup()
     // If we are the Parent process cleaning up after the Child (QEMU) exited,
     // our in-memory state (m_tpmPid, etc.) is empty because setup happened in the Child.
     // We try to recover state from the .runtime_state file.
+    std::string savedGpuBdf, savedAudioBdf;
     if (m_tpmPid == -1 && !m_hugepagesModified) {
         fs::path statePath = Config::VxmDir / ".runtime_state";
         if (fs::exists(statePath)) {
             std::ifstream stateFile(statePath);
             uint64_t savedHugepages = 0;
+            std::getline(stateFile, std::string()); // Read TPM PID (first line)
+            stateFile.seekg(0); // Reset to beginning
             if (stateFile >> m_tpmPid >> savedHugepages) {
+                std::getline(stateFile, savedGpuBdf); // Consume newline
+                std::getline(stateFile, savedGpuBdf); // GPU BDF
+                std::getline(stateFile, savedAudioBdf); // Audio BDF
+
                 if (savedHugepages > 0) {
                     m_originalHugepages = savedHugepages;
                     m_hugepagesModified = true;
@@ -377,7 +384,7 @@ pid_t VirtualMachine::startTpmEmulator()
     return pid;
 }
 
-void VirtualMachine::reserveHugepages(uint64_t ramGb)
+bool VirtualMachine::reserveHugepages(uint64_t ramGb)
 {
     // Calculate required 2MB hugepages
     // RAM in GB -> MB -> number of 2MB pages
@@ -405,7 +412,8 @@ void VirtualMachine::reserveHugepages(uint64_t ramGb)
 
     if (!foundHugepages) {
         std::cerr << "[Warning] Could not detect hugepages in /proc/meminfo." << std::endl;
-        return;
+        std::cerr << "          Falling back to standard memory allocation." << std::endl;
+        return false;
     }
 
     // Save original hugepage count for cleanup
@@ -413,7 +421,7 @@ void VirtualMachine::reserveHugepages(uint64_t ramGb)
 
     if (currentPages >= requiredPages) {
         std::cout << "[VxM] Sufficient hugepages already allocated (" << currentPages << ")." << std::endl;
-        return;
+        return true;
     }
 
     // Need to allocate more hugepages
@@ -421,9 +429,9 @@ void VirtualMachine::reserveHugepages(uint64_t ramGb)
 
     std::ofstream hugepagesFile("/proc/sys/vm/nr_hugepages");
     if (!hugepagesFile) {
-        std::cerr << "[Warning] Failed to write to /proc/sys/vm/nr_hugepages. Run as root or configure manually." << std::endl;
-        std::cerr << "          To allocate hugepages manually: echo " << requiredPages << " | sudo tee /proc/sys/vm/nr_hugepages" << std::endl;
-        return;
+        std::cerr << "[Warning] Failed to write to /proc/sys/vm/nr_hugepages." << std::endl;
+        std::cerr << "          Falling back to standard memory allocation." << std::endl;
+        return false;
     }
 
     hugepagesFile << requiredPages;
@@ -444,13 +452,20 @@ void VirtualMachine::reserveHugepages(uint64_t ramGb)
     if (allocatedPages >= requiredPages) {
         std::cout << "[VxM] Successfully allocated " << allocatedPages << " hugepages." << std::endl;
         m_hugepagesModified = true;
+        return true;
     } else {
+        // CRITICAL FIX: If we can't allocate enough hugepages, fail gracefully
+        // instead of passing -mem-prealloc/-mem-path which would crash QEMU
         std::cerr << "[Warning] Could only allocate " << allocatedPages << " hugepages (requested " << requiredPages << ")." << std::endl;
-        std::cerr << "          VM performance may be reduced. Consider freeing memory or running with fewer resources." << std::endl;
-        // Still mark as modified if we changed anything
+        std::cerr << "          This is likely due to memory fragmentation." << std::endl;
+        std::cerr << "          Falling back to standard memory allocation (slower but functional)." << std::endl;
+
+        // Still mark as modified if we changed anything (for cleanup)
         if (allocatedPages > currentPages) {
             m_hugepagesModified = true;
         }
+
+        return false;
     }
 }
 
@@ -619,7 +634,21 @@ void VirtualMachine::start()
     uint64_t ram = hw.getSafeRamAmount(profile.maxRam);
 
     // 2. Reserve hugepages for better performance
-    reserveHugepages(ram);
+    bool useHugepages = reserveHugepages(ram);
+
+    // CRITICAL: Write initial state file NOW to ensure cleanup can happen even if we fail later.
+    // This protects against hugepage leaks if GPU binding or TPM startup fails.
+    fs::path statePath = Config::VxmDir / ".runtime_state";
+    {
+        std::ofstream stateFile(statePath);
+        if (stateFile) {
+            stateFile << "-1\n"; // TPM PID (not started yet)
+            stateFile << (m_hugepagesModified ? m_originalHugepages : 0) << "\n";
+            stateFile << "\n"; // GPU BDF (not bound yet)
+            stateFile << "\n"; // Audio BDF (not bound yet)
+            stateFile.close();
+        }
+    }
 
     // Get or generate MAC address
     std::string mac;
@@ -730,12 +759,15 @@ void VirtualMachine::start()
 
     // STATE PERSISTENCE:
     // We are about to exec() into QEMU, which will wipe this process memory.
-    // We must save critical cleanup state (TPM PID, Hugepages) to disk so the Parent
+    // We must save critical cleanup state (TPM PID, Hugepages, GPU BDF) to disk so the Parent
     // process can read it when QEMU exits.
     fs::path statePath = Config::VxmDir / ".runtime_state";
     std::ofstream stateFile(statePath);
     if (stateFile) {
-        stateFile << m_tpmPid << " " << (m_hugepagesModified ? m_originalHugepages : 0);
+        stateFile << m_tpmPid << "\n";
+        stateFile << (m_hugepagesModified ? m_originalHugepages : 0) << "\n";
+        stateFile << gpu.pciAddress << "\n";
+        stateFile << gpu.audioPciAddress << "\n";
         stateFile.close();
     } else {
         std::cerr << "[Warning] Failed to save runtime state. Cleanup might be incomplete." << std::endl;
@@ -763,10 +795,12 @@ void VirtualMachine::start()
                          ",threads=" + std::to_string(cpu.threadsPerCore);
     args.push_back("-smp"); args.push_back(smpArg);
 
-    // Memory with hugepages
+    // Memory (with hugepages if available, standard otherwise)
     args.push_back("-m"); args.push_back(std::to_string(ram) + "G");
-    args.push_back("-mem-prealloc");
-    args.push_back("-mem-path"); args.push_back("/dev/hugepages");
+    if (useHugepages) {
+        args.push_back("-mem-prealloc");
+        args.push_back("-mem-path"); args.push_back("/dev/hugepages");
+    }
 
     // Firmware (OVMF)
     args.push_back("-drive");
@@ -884,6 +918,52 @@ void VirtualMachine::start()
         argv.push_back(const_cast<char*>(arg.c_str()));
     }
     argv.push_back(nullptr);
+
+    // CRITICAL SECURITY: Drop root privileges before executing QEMU
+    // Running QEMU as root is a severe security risk. If a VM escape occurs,
+    // the attacker immediately gains root access to the host.
+    const char* sudoUser = std::getenv("SUDO_USER");
+    if (geteuid() == 0 && sudoUser && sudoUser[0] != '\0') {
+        // Get the original user's UID and GID
+        struct passwd* pwd = getpwnam(sudoUser);
+        if (!pwd) {
+            std::cerr << "[Error] Failed to lookup user " << sudoUser << " for privilege drop." << std::endl;
+            throw std::runtime_error("Cannot drop privileges - user lookup failed");
+        }
+
+        uid_t targetUid = pwd->pw_uid;
+        gid_t targetGid = pwd->pw_gid;
+
+        // AUDIO FIX: Set up PulseAudio environment before dropping privileges
+        // This ensures QEMU can connect to the user's PulseAudio server
+        std::string runtimeDir = std::string("/run/user/") + std::to_string(targetUid);
+        std::string pulseSocket = runtimeDir + "/pulse/native";
+
+        setenv("XDG_RUNTIME_DIR", runtimeDir.c_str(), 1);
+        setenv("PULSE_SERVER", ("unix:" + pulseSocket).c_str(), 1);
+
+        // Drop privileges: set GID first, then UID (order matters!)
+        if (setgid(targetGid) != 0) {
+            std::cerr << "[Error] Failed to drop GID: " << strerror(errno) << std::endl;
+            throw std::runtime_error("Failed to drop group privileges");
+        }
+        if (setuid(targetUid) != 0) {
+            std::cerr << "[Error] Failed to drop UID: " << strerror(errno) << std::endl;
+            throw std::runtime_error("Failed to drop user privileges");
+        }
+
+        std::cout << "[VxM] Dropped privileges: QEMU will run as user " << sudoUser
+                  << " (UID=" << targetUid << ", GID=" << targetGid << ")" << std::endl;
+
+        // Verify we can't regain root
+        if (setuid(0) == 0) {
+            std::cerr << "[Error] Privilege drop failed - still able to become root!" << std::endl;
+            throw std::runtime_error("Incomplete privilege drop detected");
+        }
+    } else if (geteuid() == 0) {
+        std::cerr << "[Warning] Running as root without SUDO_USER set - QEMU will run with root privileges!" << std::endl;
+        std::cerr << "          This is a SEVERE SECURITY RISK. Please run with: sudo -E vxm start" << std::endl;
+    }
 
     execvp(argv[0], argv.data());
 

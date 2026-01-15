@@ -84,8 +84,9 @@ private:
      * @brief Reserves hugepages for VM memory.
      * Saves the original hugepage count for restoration in cleanup.
      * @param ramGb Amount of RAM in GB to reserve hugepages for.
+     * @return true if hugepages were successfully allocated, false if fallback to standard memory needed.
      */
-    void reserveHugepages(uint64_t ramGb);
+    bool reserveHugepages(uint64_t ramGb);
 
     /**
      * @brief Checks if Looking Glass kvmfr kernel module is available.

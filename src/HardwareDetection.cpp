@@ -505,7 +505,7 @@ uint64_t HardwareDetection::getSafeRamAmount(uint64_t maxGb) const
     // Read MemTotal from /proc/meminfo
     std::ifstream meminfo("/proc/meminfo");
     std::string line;
-    uint64_t kb = 0;
+    uint64_t totalKb = 0;
 
     // Search for MemTotal line (don't assume it's first)
     while (std::getline(meminfo, line)) {
@@ -513,23 +513,33 @@ uint64_t HardwareDetection::getSafeRamAmount(uint64_t maxGb) const
             // Format: MemTotal:        32805680 kB
             std::string label, unit;
             std::stringstream ss(line);
-            ss >> label >> kb >> unit;
+            ss >> label >> totalKb >> unit;
             break;
         }
     }
 
-    // Convert kB to GB, then take 50%
-    // kb -> MB (divide by 1024) -> GB (divide by 1024) -> 50% (divide by 2)
-    // Use double for precision, then round to nearest GB
-    double gb = static_cast<double>(kb) / (1024.0 * 1024.0);
-    uint64_t halfGb = static_cast<uint64_t>(gb / 2.0 + 0.5); // Round to nearest
+    // Convert kB to GB
+    double totalGb = static_cast<double>(totalKb) / (1024.0 * 1024.0);
+
+    // Safety check: Prevent OOM on low-RAM systems
+    // If total RAM is <= 6GB, refuse to run (need at least 2GB for host)
+    if (totalGb <= 6.0) {
+        throw std::runtime_error(
+            "Insufficient system RAM. VxM requires at least 6GB total RAM "
+            "(to allocate 4GB to VM while leaving 2GB for host). "
+            "Current system has " + std::to_string(static_cast<int>(totalGb)) + "GB."
+        );
+    }
+
+    // Take 50% of total RAM for VM
+    uint64_t halfGb = static_cast<uint64_t>(totalGb / 2.0 + 0.5); // Round to nearest
 
     // Cap at configurable maximum (prevents excessive allocation)
     if (halfGb > maxGb) {
         halfGb = maxGb;
     }
 
-    // Ensure at least 4GB minimum
+    // Ensure at least 4GB minimum (only if system has enough RAM)
     if (halfGb < 4) {
         halfGb = 4;
     }
