@@ -47,11 +47,12 @@ void printUsage()
               << "  start         Boot the virtual machine using the active hardware profile. (requires root)\n"
               << "  status        Show current VM status and hardware binding state.\n"
               << "  list-gpus     Scan system for available GPUs and display PCI addresses.\n"
-              << "  fingerprint   Display the system fingerprint (DMI UUID). Use --json for JSON output.\n"
+              << "  fingerprint   Display the system fingerprint (DMI UUID).\n"
               << "  config        Update configuration and hardware profiles.\n"
               << "  reset         Remove all VxM files and configuration (clean slate).\n\n"
               << "Options:\n"
-              << "  --set-gpu <PCI_ADDRESS>    Set the GPU for passthrough by PCI address.\n";
+              << "  --set-gpu <PCI_ADDRESS>    Set the GPU for passthrough by PCI address.\n"
+              << "  --json                     Output machine-readable JSON (status, list-gpus, fingerprint).\n";
 }
 
 int main(int argc, char *argv[])
@@ -75,13 +76,36 @@ int main(int argc, char *argv[])
         } else if (command == "list-gpus") {
             VxM::HardwareDetection hw;
             auto gpus = hw.listGpus();
-            std::cout << "Available GPUs:" << std::endl;
-            for (const auto &gpu : gpus) {
-                std::cout << "  " << gpu.pciAddress << " " << gpu.name;
-                if (gpu.isBootVga) {
-                    std::cout << " [PRIMARY/HOST GPU - DO NOT USE FOR PASSTHROUGH]";
+            bool jsonOutput = (argc > 2 && std::string(argv[2]) == "--json");
+
+            if (jsonOutput) {
+                std::cout << "[\n";
+                for (size_t i = 0; i < gpus.size(); ++i) {
+                    const auto &gpu = gpus[i];
+                    std::cout << "  {\n";
+                    std::cout << "    \"pci\": \"" << gpu.pciAddress << "\",\n";
+                    std::cout << "    \"name\": \"" << gpu.name << "\",\n";
+                    std::cout << "    \"is_boot_vga\": " << (gpu.isBootVga ? "true" : "false") << ",\n";
+                    std::cout << "    \"vendor_id\": \"" << gpu.vendorId << "\",\n";
+                    std::cout << "    \"device_id\": \"" << gpu.deviceId << "\",\n";
+                    std::cout << "    \"needs_rom\": " << (gpu.needsRom ? "true" : "false");
+                    if (gpu.needsRom && !gpu.romPath.empty()) {
+                        std::cout << ",\n    \"rom_path\": \"" << gpu.romPath << "\"";
+                    }
+                    std::cout << "\n  }";
+                    if (i < gpus.size() - 1) std::cout << ",";
+                    std::cout << "\n";
                 }
-                std::cout << std::endl;
+                std::cout << "]" << std::endl;
+            } else {
+                std::cout << "Available GPUs:" << std::endl;
+                for (const auto &gpu : gpus) {
+                    std::cout << "  " << gpu.pciAddress << " " << gpu.name;
+                    if (gpu.isBootVga) {
+                        std::cout << " [PRIMARY/HOST GPU - DO NOT USE FOR PASSTHROUGH]";
+                    }
+                    std::cout << std::endl;
+                }
             }
             return 0;
         } else if (command == "fingerprint") {
@@ -127,46 +151,72 @@ int main(int argc, char *argv[])
                 vm.start();
             }
         } else if (command == "status") {
+            bool jsonOutput = (argc > 2 && std::string(argv[2]) == "--json");
+            std::string state = "stopped";
+            pid_t pid = 0;
+            std::string gpu;
+
             // Check if VxM is running by reading the lock file
             if (std::filesystem::exists(Config::InstanceLockFile)) {
                 std::ifstream lockFile(Config::InstanceLockFile);
-                pid_t pid = 0;
                 if (lockFile >> pid) {
                     // Check if the process is still running
                     if (kill(pid, 0) == 0) {
-                        std::cout << "[VxM] Status: Running (PID: " << pid << ")" << std::endl;
-
-                        // Try to get more details from /proc
-                        std::string procPath = "/proc/" + std::to_string(pid) + "/cmdline";
-                        if (std::filesystem::exists(procPath)) {
-                            std::ifstream cmdline(procPath);
-                            std::string cmd;
-                            std::getline(cmdline, cmd);
-                            // Replace null bytes with spaces for readability
-                            for (char &c : cmd) {
-                                if (c == '\0') c = ' ';
-                            }
-                            if (!cmd.empty() && cmd.find("qemu") != std::string::npos) {
-                                std::cout << "      Process: qemu-system-x86_64" << std::endl;
-                            }
-                        }
+                        state = "running";
 
                         // Check which GPU is bound to vfio-pci
                         ProfileManager pm;
                         Profile profile = pm.loadProfile();
-                        if (!profile.selectedGpuPci.empty()) {
-                            std::cout << "      GPU: " << profile.selectedGpuPci << std::endl;
-                        }
+                        gpu = profile.selectedGpuPci;
                     } else {
-                        std::cout << "[VxM] Status: Stopped (stale lock file found)" << std::endl;
-                        std::cout << "      Run 'vxm start' to launch a new instance" << std::endl;
+                        state = "stale";
+                        pid = 0;
                     }
                 }
-            } else {
-                std::cout << "[VxM] Status: Stopped" << std::endl;
-                std::cout << "      No active VxM instance found" << std::endl;
-                std::cout << "      Run 'vxm start' to launch" << std::endl;
             }
+
+            if (jsonOutput) {
+                std::cout << "{\n";
+                std::cout << "  \"state\": \"" << state << "\"";
+                if (pid > 0) {
+                    std::cout << ",\n  \"pid\": " << pid;
+                }
+                if (!gpu.empty()) {
+                    std::cout << ",\n  \"gpu\": \"" << gpu << "\"";
+                }
+                std::cout << "\n}" << std::endl;
+            } else {
+                if (state == "running") {
+                    std::cout << "[VxM] Status: Running (PID: " << pid << ")" << std::endl;
+
+                    // Try to get more details from /proc
+                    std::string procPath = "/proc/" + std::to_string(pid) + "/cmdline";
+                    if (std::filesystem::exists(procPath)) {
+                        std::ifstream cmdline(procPath);
+                        std::string cmd;
+                        std::getline(cmdline, cmd);
+                        // Replace null bytes with spaces for readability
+                        for (char &c : cmd) {
+                            if (c == '\0') c = ' ';
+                        }
+                        if (!cmd.empty() && cmd.find("qemu") != std::string::npos) {
+                            std::cout << "      Process: qemu-system-x86_64" << std::endl;
+                        }
+                    }
+
+                    if (!gpu.empty()) {
+                        std::cout << "      GPU: " << gpu << std::endl;
+                    }
+                } else if (state == "stale") {
+                    std::cout << "[VxM] Status: Stopped (stale lock file found)" << std::endl;
+                    std::cout << "      Run 'vxm start' to launch a new instance" << std::endl;
+                } else {
+                    std::cout << "[VxM] Status: Stopped" << std::endl;
+                    std::cout << "      No active VxM instance found" << std::endl;
+                    std::cout << "      Run 'vxm start' to launch" << std::endl;
+                }
+            }
+            return 0;
         } else if (command == "reset") {
             // If running with sudo, ensure user environment is preserved
             const char* sudoUser = std::getenv("SUDO_USER");
