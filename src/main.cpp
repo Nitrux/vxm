@@ -52,6 +52,7 @@ void printUsage()
               << "  reset         Remove all VxM files and configuration (clean slate).\n\n"
               << "Options:\n"
               << "  --set-gpu <PCI_ADDRESS>    Set the GPU for passthrough by PCI address.\n"
+              << "  --disable-static           Disable boot-time GPU seizure (Static Binding).\n"
               << "  --json                     Output machine-readable JSON (status, list-gpus, fingerprint).\n";
 }
 
@@ -117,6 +118,26 @@ int main(int argc, char *argv[])
             }
             return 0;
         } else if (command == "config") {
+            if (argc >= 3 && std::string(argv[2]) == "--disable-static") {
+                // This requires root because the file is in /etc
+                if (geteuid() != 0) {
+                    std::cerr << "[Error] Disabling static binding requires root permissions." << std::endl;
+                    std::cerr << "        Please run: sudo vxm config --disable-static" << std::endl;
+                    return 1;
+                }
+
+                std::filesystem::path triggerFile = "/etc/vxm/static_bind_enabled";
+                if (std::filesystem::exists(triggerFile)) {
+                    std::filesystem::remove(triggerFile);
+                    std::cout << "[VxM] Static binding DISABLED." << std::endl;
+                    std::cout << "      The GPU will be returned to the host OS on the next boot." << std::endl;
+                    std::cout << "      Please REBOOT your system." << std::endl;
+                } else {
+                    std::cout << "[VxM] Static binding was not enabled." << std::endl;
+                }
+                return 0;
+            }
+
             if (argc >= 4 && std::string(argv[2]) == "--set-gpu") {
                 VxM::ProfileManager pm;
                 if (!pm.selectGpu(argv[3])) {
@@ -125,8 +146,12 @@ int main(int argc, char *argv[])
                 }
                 return 0;
             }
-            std::cerr << "Usage: vxm config --set-gpu <PCI_ID or String>" << std::endl;
+
+            std::cerr << "Usage: vxm config [options]\n"
+                      << "  --set-gpu <PCI_ID>     Set specific GPU for passthrough\n"
+                      << "  --disable-static       Disable boot-time GPU seizure (Static Binding)" << std::endl;
             return 1;
+
         } else if (command == "start") {
             // Check for root permissions required for GPU binding
             if (geteuid() != 0) {
@@ -155,6 +180,9 @@ int main(int argc, char *argv[])
             std::string state = "stopped";
             pid_t pid = 0;
             std::string gpu;
+            
+            // Check for Static Binding
+            bool staticActive = std::filesystem::exists("/etc/vxm/static_bind_enabled");
 
             // Check if VxM is running by reading the lock file
             if (std::filesystem::exists(Config::InstanceLockFile)) {
@@ -177,7 +205,8 @@ int main(int argc, char *argv[])
 
             if (jsonOutput) {
                 std::cout << "{\n";
-                std::cout << "  \"state\": \"" << state << "\"";
+                std::cout << "  \"state\": \"" << state << "\",\n";
+                std::cout << "  \"static_binding\": " << (staticActive ? "true" : "false");
                 if (pid > 0) {
                     std::cout << ",\n  \"pid\": " << pid;
                 }
@@ -215,6 +244,10 @@ int main(int argc, char *argv[])
                     std::cout << "      No active VxM instance found" << std::endl;
                     std::cout << "      Run 'vxm start' to launch" << std::endl;
                 }
+
+                if (staticActive) {
+                    std::cout << "      Mode: Static Binding (GPU seized at boot)" << std::endl;
+                }
             }
             return 0;
         } else if (command == "reset") {
@@ -233,12 +266,25 @@ int main(int argc, char *argv[])
                       << "  - Virtual machine disk images\n"
                       << "  - Downloaded ISOs and drivers\n"
                       << "  - Configuration files\n"
-                      << "  - ROM files\n\n"
+                      << "  - ROM files\n"
+                      << "  - Static binding configuration (reverts GPU to host)\n\n"
                       << "Are you sure you want to continue? (yes/no): ";
             std::string response;
             std::getline(std::cin, response);
             if (response == "yes") {
                 VirtualMachine::reset();
+
+                // Clean up static binding file if it exists
+                // This is safe to attempt even if we aren't root (it just fails gracefully)
+                if (std::filesystem::exists("/etc/vxm/static_bind_enabled")) {
+                    try {
+                        std::filesystem::remove("/etc/vxm/static_bind_enabled");
+                        std::cout << "[VxM] Removed static binding configuration." << std::endl;
+                    } catch (...) {
+                        std::cerr << "[Warning] Could not remove /etc/vxm/static_bind_enabled (Permission denied)." << std::endl;
+                        std::cerr << "          Run 'sudo vxm config --disable-static' to finish cleanup." << std::endl;
+                    }
+                }
             } else {
                 std::cout << "Reset cancelled." << std::endl;
             }
