@@ -56,6 +56,35 @@ void printUsage()
               << "  --json                     Output machine-readable JSON (status, list-gpus, fingerprint).\n";
 }
 
+// Helper to disable static binding via overlayroot-chroot
+bool disableStaticBinding() {
+    std::cout << "[VxM] Disabling Static Binding via overlayroot-chroot..." << std::endl;
+    std::cout << "      This involves updating GRUB and initramfs. Please wait." << std::endl;
+
+    // Command to remove the parameter from /etc/default/grub inside the writable chroot
+    // Updated to use specific devtmpfs and findfs mounts for Nitrux compatibility
+    std::string cmd = "overlayroot-chroot /bin/sh -c \""
+                      "mount -t devtmpfs dev /dev && "
+                      "mount -t auto $(findfs LABEL=NX_VAR_LIB) /var/lib && "
+                      "sed -i 's/ vxm.static_bind=1//g' /etc/default/grub && "
+                      "sed -i 's/vxm.static_bind=1//g' /etc/default/grub && "
+                      "update-grub && "
+                      "update-initramfs -u && "
+                      "sync && "
+                      "umount /dev /var/lib\"";
+
+    int ret = std::system(cmd.c_str());
+    if (ret == 0) {
+        std::cout << "[VxM] Static binding DISABLED." << std::endl;
+        std::cout << "      The GPU will be returned to the host OS on the next boot." << std::endl;
+        std::cout << "      Please REBOOT your system." << std::endl;
+        return true;
+    } else {
+        std::cerr << "[Error] Failed to disable static binding. Command returned: " << ret << std::endl;
+        return false;
+    }
+}
+
 int main(int argc, char *argv[])
 {
     if (argc < 2) {
@@ -119,21 +148,15 @@ int main(int argc, char *argv[])
             return 0;
         } else if (command == "config") {
             if (argc >= 3 && std::string(argv[2]) == "--disable-static") {
-                // This requires root because the file is in /etc
+                // This requires root because we modify GRUB via chroot
                 if (geteuid() != 0) {
                     std::cerr << "[Error] Disabling static binding requires root permissions." << std::endl;
                     std::cerr << "        Please run: sudo vxm config --disable-static" << std::endl;
                     return 1;
                 }
 
-                std::filesystem::path triggerFile = "/etc/vxm/static-bind-enabled";
-                if (std::filesystem::exists(triggerFile)) {
-                    std::filesystem::remove(triggerFile);
-                    std::cout << "[VxM] Static binding DISABLED." << std::endl;
-                    std::cout << "      The GPU will be returned to the host OS on the next boot." << std::endl;
-                    std::cout << "      Please REBOOT your system." << std::endl;
-                } else {
-                    std::cout << "[VxM] Static binding was not enabled." << std::endl;
+                if (!disableStaticBinding()) {
+                    return 1;
                 }
                 return 0;
             }
@@ -181,8 +204,18 @@ int main(int argc, char *argv[])
             pid_t pid = 0;
             std::string gpu;
             
-            // Check for Static Binding
-            bool staticActive = std::filesystem::exists("/etc/vxm/static-bind-enabled");
+            // Check for Static Binding by reading kernel command line
+            bool staticActive = false;
+            std::ifstream cmdLineFile("/proc/cmdline");
+            std::string cmdLineContent;
+            if (std::getline(cmdLineFile, cmdLineContent)) {
+                if (cmdLineContent.find("vxm.static_bind=1") != std::string::npos ||
+                    cmdLineContent.find("vxm.static_bind=yes") != std::string::npos ||
+                    cmdLineContent.find("vxm.static_bind=true") != std::string::npos ||
+                    cmdLineContent.find("vxm.static_bind=on") != std::string::npos) {
+                    staticActive = true;
+                }
+            }
 
             // Check if VxM is running by reading the lock file
             if (std::filesystem::exists(Config::InstanceLockFile)) {
@@ -246,7 +279,7 @@ int main(int argc, char *argv[])
                 }
 
                 if (staticActive) {
-                    std::cout << "      Mode: Static Binding (GPU seized at boot)" << std::endl;
+                    std::cout << "      Mode: Static Binding (Enabled in Kernel Cmdline)" << std::endl;
                 }
             }
             return 0;
@@ -274,15 +307,24 @@ int main(int argc, char *argv[])
             if (response == "yes") {
                 VirtualMachine::reset();
 
-                // Clean up static binding file if it exists
-                // This is safe to attempt even if we aren't root (it just fails gracefully)
-                if (std::filesystem::exists("/etc/vxm/static-bind-enabled")) {
-                    try {
-                        std::filesystem::remove("/etc/vxm/static-bind-enabled");
-                        std::cout << "[VxM] Removed static binding configuration." << std::endl;
-                    } catch (...) {
-                        std::cerr << "[Warning] Could not remove /etc/vxm/static-bind-enabled (Permission denied)." << std::endl;
-                        std::cerr << "          Run 'sudo vxm config --disable-static' to finish cleanup." << std::endl;
+                // Clean up static binding if enabled
+                // Check if currently enabled via cmdline
+                std::ifstream cmdLineFile("/proc/cmdline");
+                std::string cmdLineContent;
+                bool needsCleanup = false;
+                if (std::getline(cmdLineFile, cmdLineContent)) {
+                    if (cmdLineContent.find("vxm.static_bind=1") != std::string::npos) {
+                        needsCleanup = true;
+                    }
+                }
+
+                if (needsCleanup) {
+                    // Attempt to disable it
+                    if (geteuid() != 0) {
+                         std::cerr << "[Warning] Could not remove Static Binding (requires root)." << std::endl;
+                         std::cerr << "          Run 'sudo vxm config --disable-static' to finish cleanup." << std::endl;
+                    } else {
+                        disableStaticBinding();
                     }
                 }
             } else {

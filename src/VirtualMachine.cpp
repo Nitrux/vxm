@@ -379,17 +379,6 @@ void VirtualMachine::initializeCrate()
     }
 
     // Download VirtIO drivers ISO if not present
-    // TODO: Future enhancement - Replace fork/exec with native libcurl for better UX
-    //       Current issues:
-    //       - Blocking waitpid() with no timeout (hangs on slow connections)
-    //       - Curl progress bar conflicts with VxM's structured output
-    //       - No checksum verification or download size validation
-    //       - Fallback logic only triggers on exec failure, not download failure
-    //       Future implementation should use libcurl with:
-    //       - Custom progress callback: "[VxM] Downloading... 245 MB / 512 MB (48%)"
-    //       - Timeout support (e.g., 10 minutes max)
-    //       - SHA256 checksum verification
-    //       - Better error messages: "[Error] Download failed: Connection timeout after 300s"
     if (!fs::exists(Config::VirtioIso)) {
         std::cout << "[VxM] VirtIO drivers ISO not found. Downloading..." << std::endl;
         std::cout << "[VxM] Source: " << Config::VirtioDriversUrl << std::endl;
@@ -552,31 +541,34 @@ void VirtualMachine::start()
         std::getline(std::cin, answer);
 
         if (answer == "y" || answer == "Y") {
-            // Create the trigger file for initramfs hook
-            fs::path triggerFile = "/etc/vxm/static-bind-enabled";
+            // Command to ADD the parameter to /etc/default/grub inside the writable chroot
+            // Logic: mount /dev (devtmpfs) and /var/lib (NX_VAR_LIB), check if param exists, if not prepend it to quoted value, then update.
+            // Using a simple sed replace on the default line structure.
+            std::cout << "[VxM] Enabling Static Binding via overlayroot-chroot..." << std::endl;
+            
+            std::string cmd = "overlayroot-chroot /bin/sh -c \""
+                              "mount -t devtmpfs dev /dev && "
+                              "mount -t auto $(findfs LABEL=NX_VAR_LIB) /var/lib && "
+                              "if ! grep -q 'vxm.static_bind=1' /etc/default/grub; then "
+                              "sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=\\\"/&vxm.static_bind=1 /' /etc/default/grub; "
+                              "fi && "
+                              "update-grub && "
+                              "update-initramfs -u && "
+                              "sync && "
+                              "umount /dev /var/lib\"";
 
-            // Ensure directory exists
-            fs::create_directories(triggerFile.parent_path());
-
-            std::ofstream outfile(triggerFile);
-            if (outfile) {
-                // Write GPU info for the initramfs hook to use
-                outfile << "gpu=" << gpu.pciAddress << "\n";
-                outfile << "vendor=" << gpu.vendorId << "\n";
-                outfile << "device=" << gpu.deviceId << "\n";
-                outfile.close();
-
-                if (fs::exists(triggerFile)) {
-                    std::cout << "\n[VxM] Static Binding ENABLED." << std::endl;
-                    std::cout << "      GPU: " << gpu.pciAddress << " (" << gpu.vendorId << ":" << gpu.deviceId << ")" << std::endl;
-                    std::cout << "\n      Please REBOOT your system." << std::endl;
-                    std::cout << "      The GPU will be isolated automatically during the next boot." << std::endl;
-                    std::cout << "      Then run 'sudo -E vxm start' again." << std::endl;
-                    cleanup();
-                    exit(0);
-                }
+            int ret = std::system(cmd.c_str());
+            if (ret == 0) {
+                std::cout << "\n[VxM] Static Binding ENABLED." << std::endl;
+                std::cout << "      GPU: " << gpu.pciAddress << " (" << gpu.vendorId << ":" << gpu.deviceId << ")" << std::endl;
+                std::cout << "\n      Please REBOOT your system." << std::endl;
+                std::cout << "      The GPU will be isolated automatically during the next boot." << std::endl;
+                std::cout << "      Then run 'sudo -E vxm start' again." << std::endl;
+                cleanup();
+                exit(0);
+            } else {
+                std::cerr << "[Error] Failed to enable static binding. Command returned: " << ret << std::endl;
             }
-            std::cerr << "[Error] Failed to create trigger file at " << triggerFile << std::endl;
         }
 
         cleanup();
@@ -820,7 +812,6 @@ bool VirtualMachine::switchMonitorInput(const std::string &monitor, uint8_t inpu
     // Check if ddcutil is available
     if (std::system("command -v ddcutil >/dev/null 2>&1") != 0) {
         std::cerr << "[Warning] ddcutil not found. Cannot switch monitor input." << std::endl;
-        std::cerr << "          Install with: sudo apt install ddcutil" << std::endl;
         return false;
     }
 
