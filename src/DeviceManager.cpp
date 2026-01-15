@@ -120,6 +120,49 @@ bool DeviceManager::bindToVfio()
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
+    // Binding failed - provide detailed diagnostics
+    std::string finalDriver = getCurrentDriver();
+    std::cerr << "[Error] Failed to bind " << m_pciAddress << " to vfio-pci." << std::endl;
+    std::cerr << std::endl;
+
+    if (!finalDriver.empty()) {
+        std::cerr << "        Device is still bound to: " << finalDriver << std::endl;
+        std::cerr << std::endl;
+
+        if (finalDriver == "nvidia" || finalDriver == "nouveau") {
+            std::cerr << "        NVIDIA Optimus Laptop Detected" << std::endl;
+            std::cerr << "        The NVIDIA driver is refusing to release the GPU." << std::endl;
+            std::cerr << std::endl;
+            std::cerr << "        Solutions:" << std::endl;
+            std::cerr << "        1. Switch to integrated mode: nx-envycontrol --switch integrated" << std::endl;
+            std::cerr << "        2. Blacklist nvidia driver: echo 'blacklist nvidia' | sudo tee /etc/modprobe.d/vxm-nvidia.conf" << std::endl;
+            std::cerr << "        3. Configure early VFIO binding in initramfs" << std::endl;
+            std::cerr << std::endl;
+            std::cerr << "        Note: Optimus laptops have limited passthrough support." << std::endl;
+            std::cerr << "              The dGPU may not have its own video outputs." << std::endl;
+        } else if (finalDriver == "amdgpu" || finalDriver == "radeon") {
+            std::cerr << "        The AMD driver is refusing to release the GPU." << std::endl;
+            std::cerr << std::endl;
+            std::cerr << "        Solutions:" << std::endl;
+            std::cerr << "        1. Ensure this is NOT your primary/boot GPU" << std::endl;
+            std::cerr << "        2. Configure early VFIO binding in initramfs" << std::endl;
+            std::cerr << "        3. Add 'vfio-pci.ids=<vendor>:<device>' to kernel parameters" << std::endl;
+        } else if (finalDriver == "i915" || finalDriver == "xe") {
+            std::cerr << "        Intel integrated GPU cannot be passed through." << std::endl;
+            std::cerr << "        VxM requires a discrete GPU for passthrough." << std::endl;
+        } else {
+            std::cerr << "        The " << finalDriver << " driver is refusing to release the GPU." << std::endl;
+        }
+    } else {
+        std::cerr << "        Device has no driver but vfio-pci binding failed." << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "        Possible causes:" << std::endl;
+        std::cerr << "        - IOMMU not properly enabled" << std::endl;
+        std::cerr << "        - vfio-pci module not loaded" << std::endl;
+        std::cerr << "        - Permission denied (are you running as root?)" << std::endl;
+    }
+
+    std::cerr << std::endl;
     return false;
 }
 
