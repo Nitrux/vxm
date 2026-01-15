@@ -126,7 +126,7 @@ int main(int argc, char *argv[])
                     return 1;
                 }
 
-                std::filesystem::path triggerFile = "/etc/vxm/static_bind_enabled";
+                std::filesystem::path triggerFile = "/etc/vxm/static-bind-enabled";
                 if (std::filesystem::exists(triggerFile)) {
                     std::filesystem::remove(triggerFile);
                     std::cout << "[VxM] Static binding DISABLED." << std::endl;
@@ -182,7 +182,7 @@ int main(int argc, char *argv[])
             std::string gpu;
             
             // Check for Static Binding
-            bool staticActive = std::filesystem::exists("/etc/vxm/static_bind_enabled");
+            bool staticActive = std::filesystem::exists("/etc/vxm/static-bind-enabled");
 
             // Check if VxM is running by reading the lock file
             if (std::filesystem::exists(Config::InstanceLockFile)) {
@@ -276,12 +276,12 @@ int main(int argc, char *argv[])
 
                 // Clean up static binding file if it exists
                 // This is safe to attempt even if we aren't root (it just fails gracefully)
-                if (std::filesystem::exists("/etc/vxm/static_bind_enabled")) {
+                if (std::filesystem::exists("/etc/vxm/static-bind-enabled")) {
                     try {
-                        std::filesystem::remove("/etc/vxm/static_bind_enabled");
+                        std::filesystem::remove("/etc/vxm/static-bind-enabled");
                         std::cout << "[VxM] Removed static binding configuration." << std::endl;
                     } catch (...) {
-                        std::cerr << "[Warning] Could not remove /etc/vxm/static_bind_enabled (Permission denied)." << std::endl;
+                        std::cerr << "[Warning] Could not remove /etc/vxm/static-bind-enabled (Permission denied)." << std::endl;
                         std::cerr << "          Run 'sudo vxm config --disable-static' to finish cleanup." << std::endl;
                     }
                 }
