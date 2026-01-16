@@ -25,6 +25,7 @@ struct GpuInfo
     bool isBootVga = false;           // True if this is the primary/boot GPU
     bool needsRom = false;            // True if GPU requires a patched ROM file (AMD reset bug)
     std::string romPath;              // Path to ROM file if needsRom is true and ROM found
+    bool isMobileGpu = false;         // True if this is a mobile/laptop GPU (Optimus, etc.)
 };
 
 struct CpuInfo

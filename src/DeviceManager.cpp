@@ -73,13 +73,38 @@ std::string DeviceManager::getCurrentDriver() const
     return "";
 }
 
-bool DeviceManager::bindToVfio()
+bool DeviceManager::bindToVfio(bool isMobileGpu)
 {
     if (isBoundToVfio()) {
         return true;
     }
 
     std::cout << "[VxM] Seizing control of " << m_pciAddress << "..." << std::endl;
+
+    // Check if this is a mobile GPU - refuse dynamic binding
+    if (isMobileGpu) {
+        std::string currentDriver = getCurrentDriver();
+
+        std::cerr << "[Error] Mobile/Laptop GPU detected (" << m_pciAddress << ")" << std::endl;
+        std::cerr << "        Dynamic unbinding is not supported for mobile GPUs." << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "        Why this fails:" << std::endl;
+        std::cerr << "        - Mobile GPUs (NVIDIA Optimus, AMD Switchable Graphics) are tightly" << std::endl;
+        std::cerr << "          integrated with the display system and cannot be hot-unplugged" << std::endl;
+        std::cerr << "        - The GPU may be muxed with the integrated GPU for display output" << std::endl;
+        std::cerr << "        - Runtime unbinding would leave the system in an unstable state" << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "        Solution: Enable Static Binding" << std::endl;
+        std::cerr << "        Static binding isolates the GPU at boot time, before any drivers load." << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "        To enable static binding, run:" << std::endl;
+        std::cerr << "            sudo vxm start" << std::endl;
+        std::cerr << "        Then choose 'y' when prompted to enable static binding." << std::endl;
+        std::cerr << "        After reboot, the GPU will be automatically isolated for VxM." << std::endl;
+        std::cerr << std::endl;
+
+        return false;
+    }
 
     // 1. Ensure vfio-pci module is loaded
     if (!std::filesystem::exists("/sys/bus/pci/drivers/vfio-pci")) {
@@ -101,14 +126,60 @@ bool DeviceManager::bindToVfio()
     // 3. Unbind from current driver (if any)
     std::string currentDriver = getCurrentDriver();
     if (!currentDriver.empty()) {
+        // NVIDIA-specific: Check for usage count before attempting unbind
+        // The NVIDIA driver will fail with "non-zero usage count" if the GPU is in use
+        if (currentDriver == "nvidia") {
+            // Check if nvidia-drm is loaded with modeset enabled
+            std::filesystem::path modesetPath = "/sys/module/nvidia_drm/parameters/modeset";
+            if (std::filesystem::exists(modesetPath)) {
+                std::string modesetValue = readSysfs(modesetPath);
+                if (modesetValue == "Y" || modesetValue == "1") {
+                    std::cerr << "[Error] NVIDIA DRM modeset is active on " << m_fullAddress << std::endl;
+                    std::cerr << "        The GPU is being used as a display device (nvidia-drm modeset=1)." << std::endl;
+                    std::cerr << std::endl;
+                    std::cerr << "        This means:" << std::endl;
+                    std::cerr << "        - This GPU is actively driving your display" << std::endl;
+                    std::cerr << "        - The NVIDIA driver has a non-zero usage count" << std::endl;
+                    std::cerr << "        - Dynamic unbinding will fail with 'non-zero usage count' error" << std::endl;
+                    std::cerr << std::endl;
+                    std::cerr << "        Solutions:" << std::endl;
+                    std::cerr << "        1. Use 'nx-envycontrol --switch integrated' to disable this GPU" << std::endl;
+                    std::cerr << "        2. Ensure this is NOT your primary display GPU" << std::endl;
+                    std::cerr << "        3. Enable Static Binding (run 'sudo vxm start' and choose 'y')" << std::endl;
+                    std::cerr << std::endl;
+
+                    // Clear driver_override on failure
+                    writeSysfs(overridePath, "\n");
+                    return false;
+                }
+            }
+        }
+
         std::filesystem::path unbindPath = m_sysPath / "driver" / "unbind";
         if (!writeSysfs(unbindPath, m_fullAddress)) {
             std::cerr << "[Error] Failed to unbind " << m_fullAddress << " from " << currentDriver << std::endl;
             std::cerr << "        GPU is bound to " << currentDriver << " and refusing to release." << std::endl;
             std::cerr << std::endl;
-            std::cerr << "        This is likely because:" << std::endl;
-            std::cerr << "        - This is the primary/boot GPU" << std::endl;
-            std::cerr << "        - The driver does not support runtime unbinding" << std::endl;
+
+            // For NVIDIA, provide specific guidance about the usage count issue
+            if (currentDriver == "nvidia") {
+                std::cerr << "        NVIDIA driver error: Device has non-zero usage count." << std::endl;
+                std::cerr << std::endl;
+                std::cerr << "        This typically means:" << std::endl;
+                std::cerr << "        - An X11/Wayland session is using this GPU" << std::endl;
+                std::cerr << "        - CUDA or other NVIDIA processes are running" << std::endl;
+                std::cerr << "        - This is your primary/boot GPU" << std::endl;
+                std::cerr << std::endl;
+                std::cerr << "        Solutions:" << std::endl;
+                std::cerr << "        1. Close all applications using the GPU" << std::endl;
+                std::cerr << "        2. Use 'nx-envycontrol --switch integrated' to disable this GPU" << std::endl;
+                std::cerr << "        3. Enable Static Binding for boot-time isolation" << std::endl;
+            } else {
+                std::cerr << "        This is likely because:" << std::endl;
+                std::cerr << "        - This is the primary/boot GPU" << std::endl;
+                std::cerr << "        - The driver does not support runtime unbinding" << std::endl;
+                std::cerr << "        - The device is actively in use" << std::endl;
+            }
             std::cerr << std::endl;
 
             // Clear driver_override on failure

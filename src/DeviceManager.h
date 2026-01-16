@@ -25,9 +25,10 @@ public:
 
     /**
      * @brief Forces the device to unbind from current driver and bind to vfio-pci.
+     * @param isMobileGpu If true, refuses dynamic binding and directs to static binding.
      * @return true if successful.
      */
-    bool bindToVfio();
+    bool bindToVfio(bool isMobileGpu = false);
 
     /**
      * @brief Releases the device from vfio-pci and rebinds to host driver.

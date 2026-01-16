@@ -686,7 +686,7 @@ void VirtualMachine::start()
     DeviceManager gpuManager(gpu.pciAddress);
     DeviceManager audioManager(gpu.audioPciAddress);
 
-    if (!gpuManager.bindToVfio()) {
+    if (!gpuManager.bindToVfio(gpu.isMobileGpu)) {
         // Offer static binding as a fallback for laptops/hybrid graphics (only if TTY available)
         if (isatty(STDIN_FILENO)) {
             std::cout << "\n[VxM] Troubleshooting: Laptop / Hybrid Graphics Detected?" << std::endl;

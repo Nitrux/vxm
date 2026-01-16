@@ -144,6 +144,17 @@ std::vector<GpuInfo> HardwareDetection::listGpus() const
         // Check boot_vga
         info.isBootVga = (sysRead(entry.path() / "boot_vga") == "1");
 
+        // Detect mobile/laptop GPUs (Optimus, MXM, etc.)
+        // These GPUs typically cannot be dynamically unbound due to hybrid graphics
+        info.isMobileGpu = false;
+        std::string lowerName = info.name;
+        std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+        if (lowerName.find("mobile") != std::string::npos ||
+            lowerName.find("laptop") != std::string::npos ||
+            lowerName.find("max-q") != std::string::npos) {
+            info.isMobileGpu = true;
+        }
+
         // Audio Logic: assume .1 function, but verify it exists and is audio class
         info.audioPciAddress = info.pciAddress;
         size_t dotPos = info.audioPciAddress.find_last_of('.');
@@ -318,6 +329,16 @@ GpuInfo HardwareDetection::findPassthroughGpu() const
                         vendorName = "Unknown";
                     }
                     info.name = vendorName + " GPU [" + info.vendorId + ":" + info.deviceId + "]";
+                }
+
+                // Detect mobile/laptop GPUs (Optimus, MXM, etc.)
+                info.isMobileGpu = false;
+                std::string lowerName = info.name;
+                std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+                if (lowerName.find("mobile") != std::string::npos ||
+                    lowerName.find("laptop") != std::string::npos ||
+                    lowerName.find("max-q") != std::string::npos) {
+                    info.isMobileGpu = true;
                 }
 
                 // ROM detection for reset bug
