@@ -55,7 +55,7 @@ checkinstall -D -y \
 	--pakdir=. \
 	--maintainer=uri_herrera@nxos.org \
 	--provides=vxm \
-	--requires="clang,curl,nitrux-vfio-settings,ovmf,swtpm,qemu-system-x86,qemu-utils" \
+	--requires="clang,curl,nitrux-vfio-settings,ovmf,qemu-system-gui,qemu-system-x86,qemu-utils,swtpm" \
 	--nodoc \
 	--strip=no \
 	--stripso=yes \
