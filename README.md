@@ -23,7 +23,7 @@ Unlike traditional virtual machines that emulate graphics or use translation lay
     * **Required:** Two separate GPUs (e.g., Integrated AMD/Intel + Discrete Radeon/Nvidia).
 
 > [!WARNING]
-> We do not support Single-GPU setups. We only support Mobile GPUs for static binding.
+> VxM doesn't support Single-GPU setups. VxM only supports Mobile GPUs for static binding.
 
 * **Motherboard:**
     * IOMMU (VT-d / AMD-Vi) enabled in BIOS.
