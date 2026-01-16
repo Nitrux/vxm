@@ -153,17 +153,19 @@ void VirtualMachine::cleanup()
     }
 
     // Restore hugepages to original value if we modified them
-    if (m_hugepagesModified) {
+    if (m_hugepagesModified && m_originalHugepages > 0) {
         std::cout << "[VxM] Restoring hugepages to original value (" << m_originalHugepages << ")..." << std::endl;
         std::ofstream hugepagesFile("/proc/sys/vm/nr_hugepages");
         if (hugepagesFile) {
             hugepagesFile << m_originalHugepages;
             hugepagesFile.close();
             std::cout << "[VxM] Hugepages restored." << std::endl;
+            m_hugepagesModified = false;
+            m_originalHugepages = 0; // Mark as already restored
         } else {
             std::cerr << "[Warning] Failed to restore hugepages. They will remain at current allocation." << std::endl;
+            m_hugepagesModified = false;
         }
-        m_hugepagesModified = false;
     }
 }
 
@@ -701,16 +703,16 @@ void VirtualMachine::start()
             if (answer == "y" || answer == "Y") {
                 std::cout << "[VxM] Enabling Static Binding via overlayroot-chroot..." << std::endl;
 
-                std::string cmd = "overlayroot-chroot /bin/sh -c \""
+                std::string cmd = "overlayroot-chroot /bin/sh -c '"
                                   "mount -t devtmpfs dev /dev && "
                                   "mount -t auto $(findfs LABEL=NX_VAR_LIB) /var/lib && "
-                                  "if ! grep -q 'vxm.static_bind=1' /etc/default/grub; then "
-                                  "sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=[\"\x27]/&vxm.static_bind=1 /' /etc/default/grub; "
+                                  "if ! grep -q vxm.static_bind=1 /etc/default/grub; then "
+                                  "sed -i \"s/^GRUB_CMDLINE_LINUX_DEFAULT=[\\\"'\\'']/&vxm.static_bind=1 /\" /etc/default/grub; "
                                   "fi && "
                                   "update-grub && "
                                   "update-initramfs -u && "
                                   "sync && "
-                                  "umount /dev /var/lib\"";
+                                  "umount /dev /var/lib'";
 
                 int ret = std::system(cmd.c_str());
                 if (ret == 0) {

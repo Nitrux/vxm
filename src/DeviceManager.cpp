@@ -83,24 +83,11 @@ bool DeviceManager::bindToVfio(bool isMobileGpu)
 
     // Check if this is a mobile GPU - refuse dynamic binding
     if (isMobileGpu) {
-        std::string currentDriver = getCurrentDriver();
-
         std::cerr << "[Error] Mobile/Laptop GPU detected (" << m_pciAddress << ")" << std::endl;
         std::cerr << "        Dynamic unbinding is not supported for mobile GPUs." << std::endl;
         std::cerr << std::endl;
-        std::cerr << "        Why this fails:" << std::endl;
-        std::cerr << "        - Mobile GPUs (NVIDIA Optimus, AMD Switchable Graphics) are tightly" << std::endl;
-        std::cerr << "          integrated with the display system and cannot be hot-unplugged" << std::endl;
-        std::cerr << "        - The GPU may be muxed with the integrated GPU for display output" << std::endl;
-        std::cerr << "        - Runtime unbinding would leave the system in an unstable state" << std::endl;
-        std::cerr << std::endl;
-        std::cerr << "        Solution: Enable Static Binding" << std::endl;
-        std::cerr << "        Static binding isolates the GPU at boot time, before any drivers load." << std::endl;
-        std::cerr << std::endl;
-        std::cerr << "        To enable static binding, run:" << std::endl;
-        std::cerr << "            sudo vxm start" << std::endl;
-        std::cerr << "        Then choose 'y' when prompted to enable static binding." << std::endl;
-        std::cerr << "        After reboot, the GPU will be automatically isolated for VxM." << std::endl;
+        std::cerr << "        Mobile GPUs (NVIDIA Optimus, AMD Switchable Graphics) are tightly" << std::endl;
+        std::cerr << "        integrated with the display system and cannot be hot-unplugged." << std::endl;
         std::cerr << std::endl;
 
         return false;
