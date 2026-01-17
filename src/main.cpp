@@ -178,22 +178,57 @@ void printUsage()
               << "Usage:\n"
               << "  vxm [COMMAND] <options>\n\n"
               << "Commands:\n"
-              << "  init          Initialize storage, directory structure, and download required drivers.\n"
-              << "  start         Boot the virtual machine using the active hardware profile. (requires root)\n"
-              << "  status        Show current VM status and hardware binding state.\n"
-              << "  list-gpus     Scan system for available GPUs and display PCI addresses.\n"
-              << "  fingerprint   Display the system fingerprint (DMI UUID).\n"
-              << "  config        Update configuration and hardware profiles.\n"
-              << "  reset         Remove all VxM files and configuration (clean slate).\n\n"
-              << "Command options:\n"
+              << "  init                     Initialize storage, directory structure, and download required drivers.\n"
+              << "  start                    Boot the virtual machine. (requires root)\n"
+              << "  status                   Show current VM status and hardware binding state.\n"
+              << "  list-gpus                Scan system for available GPUs and display PCI addresses.\n"
+              << "  fingerprint              Display the system fingerprint (DMI UUID). (requires root)\n"
+              << "  config                   Update configuration and hardware profiles.\n"
+              << "  reset                    Remove all VxM files and configuration.\n\n"
+              << "Config options:\n"
+              << "  vxm config --set-gpu <PCI_ADDRESS|NAME>   Set specific GPU for passthrough\n"
+              << "  vxm config --enable-binding               Enable Static Binding (requires root + reboot)\n"
+              << "  vxm config --disable-binding              Disable Static Binding (requires root + reboot)\n\n"
+              << "Other options:\n"
               << "  vxm list-gpus [--json]\n"
               << "  vxm fingerprint [--json]\n"
-              << "  vxm status [--json]\n"
-              << "  vxm config --set-gpu <PCI_ADDRESS|NAME>\n"
-              << "  vxm config --disable-static\n\n"
+              << "  vxm status [--json]\n\n"
               << "Notes:\n"
-              << "  - 'start' requires root permissions.\n"
-              << "  - Use 'sudo -E vxm start' to preserve the user environment.\n";
+              << "  - Commands requiring root: start, fingerprint, config --enable/disable-binding\n"
+              << "  - Use 'sudo -E vxm <command>' to preserve the user environment.\n"
+              << "  - Static Binding is REQUIRED for VxM. Enable it before first use.\n";
+}
+
+// Helper to enable static binding via overlayroot-chroot
+bool enableStaticBinding() {
+    std::cout << "[VxM] Enabling Static Binding via overlayroot-chroot..." << std::endl;
+    std::cout << "      This involves updating GRUB and initramfs. Please wait." << std::endl;
+
+    std::string cmd = "overlayroot-chroot /bin/sh -c '"
+                      "mount -t devtmpfs dev /dev && "
+                      "mount -t auto $(findfs LABEL=NX_VAR_LIB) /var/lib && "
+                      "if ! grep -q vxm.static_bind=1 /etc/default/grub; then "
+                      "sed -i \"s/^GRUB_CMDLINE_LINUX_DEFAULT=[\\\"'\\'']/&vxm.static_bind=1 /\" /etc/default/grub; "
+                      "fi && "
+                      "update-grub && "
+                      "update-initramfs -u && "
+                      "sync && "
+                      "umount /dev /var/lib'";
+
+    int ret = std::system(cmd.c_str());
+    if (ret != 0) {
+        int exitCode = ret;
+        if (WIFEXITED(ret)) {
+            exitCode = WEXITSTATUS(ret);
+        }
+        std::cerr << "[Error] Failed to enable static binding. Command returned: " << exitCode << std::endl;
+        return false;
+    }
+
+    std::cout << "\n[VxM] Static Binding ENABLED." << std::endl;
+    std::cout << "\n      Please REBOOT your system." << std::endl;
+    std::cout << "      The GPU will be isolated automatically during the next boot." << std::endl;
+    return true;
 }
 
 // Helper to disable static binding via overlayroot-chroot
@@ -488,6 +523,13 @@ int main(int argc, char *argv[])
             }
             return 0;
         } else if (command == "fingerprint") {
+            // Check for root permissions (required to read DMI UUID)
+            if (geteuid() != 0) {
+                std::cerr << "[Error] The 'fingerprint' command requires root permissions.\n"
+                          << "        Please run: sudo vxm fingerprint" << std::endl;
+                return 1;
+            }
+
             VxM::HardwareDetection hw;
             if (argc > 2 && std::string(argv[2]) == "--json") {
                 std::cout << "{\"fingerprint\": \"" << jsonEscape(hw.getSystemFingerprint()) << "\"}" << std::endl;
@@ -496,11 +538,25 @@ int main(int argc, char *argv[])
             }
             return 0;
         } else if (command == "config") {
-            if (argc >= 3 && std::string(argv[2]) == "--disable-static") {
+            if (argc >= 3 && std::string(argv[2]) == "--enable-binding") {
+                // This requires root because we modify GRUB via chroot
+                if (geteuid() != 0) {
+                    std::cerr << "[Error] Enabling static binding requires root permissions." << std::endl;
+                    std::cerr << "        Please run: sudo vxm config --enable-binding" << std::endl;
+                    return 1;
+                }
+
+                if (!enableStaticBinding()) {
+                    return 1;
+                }
+                return 0;
+            }
+
+            if (argc >= 3 && std::string(argv[2]) == "--disable-binding") {
                 // This requires root because we modify GRUB via chroot
                 if (geteuid() != 0) {
                     std::cerr << "[Error] Disabling static binding requires root permissions." << std::endl;
-                    std::cerr << "        Please run: sudo vxm config --disable-static" << std::endl;
+                    std::cerr << "        Please run: sudo vxm config --disable-binding" << std::endl;
                     return 1;
                 }
 
@@ -520,8 +576,9 @@ int main(int argc, char *argv[])
             }
 
             std::cerr << "Usage: vxm config [options]\n"
-                      << "  --set-gpu <PCI_ID|NAME>     Set specific GPU for passthrough\n"
-                      << "  --disable-static            Disable boot-time GPU seizure (Static Binding)" << std::endl;
+                      << "  --set-gpu <PCI_ID|NAME>   Set specific GPU for passthrough\n"
+                      << "  --enable-binding          Enable Static Binding (requires root + reboot)\n"
+                      << "  --disable-binding         Disable Static Binding (requires root + reboot)" << std::endl;
             return 1;
 
         } else if (command == "start") {

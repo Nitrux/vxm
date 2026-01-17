@@ -1,4 +1,4 @@
-/*
+ /*
  * Copyright (C) 2026 Nitrux Latinoamericana S.C.
  *
  * SPDX-License-Identifier: BSD-3-Clause
@@ -16,6 +16,7 @@
 #include <sstream>
 #include <fstream>
 #include <unistd.h> // execvp, fork, chown
+#include <fcntl.h>  // open
 #include <sys/wait.h>
 #include <sys/stat.h> // lchown
 #include <sys/resource.h> // setrlimit
@@ -382,14 +383,21 @@ pid_t VirtualMachine::startTpmEmulator()
         return -1;
     } else if (pid == 0) {
         // Child process - start swtpm
+        // Redirect stdout and stderr to /dev/null to suppress swtpm output
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+
         execlp("swtpm", "swtpm", "socket",
                "--tpmstate", ("dir=" + Config::TpmStateDir.string()).c_str(),
                "--ctrl", ("type=unixio,path=" + Config::TpmSocketPath.string()).c_str(),
                "--tpm2",
                "--log", "level=20",
                nullptr);
-        // If execlp returns, it failed
-        std::cerr << "[Error] Failed to execute swtpm. Is it installed?" << std::endl;
+        // If execlp returns, it failed (but stderr is redirected, so this won't show)
         exit(1);
     }
 
@@ -788,84 +796,84 @@ void VirtualMachine::start()
     DeviceManager gpuManager(gpu.pciAddress);
     DeviceManager audioManager(gpu.audioPciAddress);
 
-    if (!gpuManager.bindToVfio(gpu.isMobileGpu)) {
-        // Offer static binding as a fallback for laptops/hybrid graphics (only if TTY available)
-        if (isatty(STDIN_FILENO)) {
-            // First check if static binding is already enabled
-            bool staticBindAlreadyEnabled = false;
-            std::ifstream grubFile("/etc/default/grub");
-            if (grubFile.is_open()) {
-                std::string line;
-                while (std::getline(grubFile, line)) {
-                    if (line.find("vxm.static_bind=1") != std::string::npos) {
-                        staticBindAlreadyEnabled = true;
-                        break;
-                    }
-                }
-                grubFile.close();
-            }
+    // STATIC BINDING STRATEGY:
+    // VxM prefers static binding (boot-time GPU isolation) over dynamic binding because:
+    // 1. More reliable - no runtime unbinding complications
+    // 2. Simpler - fewer failure modes and edge cases
+    // 3. Safer - GPU is isolated before any driver claims it
+    // 4. Works on all systems - laptops, hybrids, desktops
 
-            if (staticBindAlreadyEnabled) {
-                std::cout << "\n[VxM] Static Binding is already enabled in GRUB." << std::endl;
-                std::cout << "      However, the GPU is not bound to vfio-pci." << std::endl;
-                std::cout << "      This means:" << std::endl;
-                std::cout << "      - You may not have rebooted after enabling static binding" << std::endl;
-                std::cout << "      - The vxm.static_bind=1 parameter may not be working correctly" << std::endl;
-                std::cout << "\n      Please REBOOT your system for static binding to take effect." << std::endl;
-                cleanup();
-                throw std::runtime_error("Static binding configured but not active - reboot required.");
-            }
+    // Check if GPU is already bound to vfio-pci (static binding is working)
+    if (!gpuManager.isBoundToVfio()) {
+        // GPU is not bound to vfio-pci - we need static binding
 
-            std::cout << "\n[VxM] Troubleshooting: Laptop / Hybrid Graphics Detected?" << std::endl;
-            std::cout << "      On some laptops (Optimus/Muxless), the GPU cannot be detached at runtime." << std::endl;
-            std::cout << "      We can enable 'Static Binding' to seize the GPU at boot time instead." << std::endl;
-            std::cout << "      (This disables the dGPU for the host OS completely)." << std::endl;
-            std::cout << "\n      Would you like to enable Static Binding for the next boot? [y/N]: ";
-
-            std::string answer;
-            std::getline(std::cin, answer);
-
-            if (answer == "y" || answer == "Y") {
-                std::cout << "[VxM] Enabling Static Binding via overlayroot-chroot..." << std::endl;
-
-                std::string cmd = "overlayroot-chroot /bin/sh -c '"
-                                  "mount -t devtmpfs dev /dev && "
-                                  "mount -t auto $(findfs LABEL=NX_VAR_LIB) /var/lib && "
-                                  "if ! grep -q vxm.static_bind=1 /etc/default/grub; then "
-                                  "sed -i \"s/^GRUB_CMDLINE_LINUX_DEFAULT=[\\\"'\\'']/&vxm.static_bind=1 /\" /etc/default/grub; "
-                                  "fi && "
-                                  "update-grub && "
-                                  "update-initramfs -u && "
-                                  "sync && "
-                                  "umount /dev /var/lib'";
-
-                int ret = std::system(cmd.c_str());
-                if (ret == 0) {
-                    std::cout << "\n[VxM] Static Binding ENABLED." << std::endl;
-                    std::cout << "\n      Please REBOOT your system." << std::endl;
-                    std::cout << "      The GPU will be isolated automatically during the next boot." << std::endl;
-                    cleanup();
-                    exit(0);
-                } else {
-                    std::cerr << "[Error] Failed to enable static binding. Command returned: " << ret << std::endl;
+        // Check if static binding is configured in GRUB
+        bool staticBindConfigured = false;
+        std::ifstream grubFile("/etc/default/grub");
+        if (grubFile.is_open()) {
+            std::string line;
+            while (std::getline(grubFile, line)) {
+                if (line.find("vxm.static_bind=1") != std::string::npos) {
+                    staticBindConfigured = true;
+                    break;
                 }
             }
-        }  // Close isatty check
+            grubFile.close();
+        }
+
+        if (staticBindConfigured) {
+            // Static binding is configured but GPU is not bound - user needs to reboot
+            std::cerr << "\n[Error] Static Binding is configured but not active." << std::endl;
+            std::cerr << "        The GPU (" << gpu.pciAddress << ") is not bound to vfio-pci." << std::endl;
+            std::cerr << std::endl;
+            std::cerr << "        This means you have not rebooted since enabling static binding." << std::endl;
+            std::cerr << std::endl;
+            std::cerr << "        Please REBOOT your system for static binding to take effect." << std::endl;
+            std::cerr << std::endl;
+            cleanup();
+            throw std::runtime_error("Static binding configured but not active - reboot required.");
+        }
+
+        // Static binding is not configured - guide user to enable it
+        std::cerr << "\n[Error] GPU is not bound to vfio-pci. Static binding is required." << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "        VxM uses Static Binding to isolate the GPU at boot time." << std::endl;
+        std::cerr << "        This is more reliable than runtime unbinding and works on all systems." << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "        To enable Static Binding:" << std::endl;
+        std::cerr << "        1. Run: sudo vxm config --enable-binding" << std::endl;
+        std::cerr << "        2. Reboot your system" << std::endl;
+        std::cerr << "        3. Run: sudo vxm start" << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "        Note: This will disable the GPU (" << gpu.pciAddress << ") for the host OS." << std::endl;
+        std::cerr << "              The GPU will only be available to the VM." << std::endl;
+        std::cerr << std::endl;
 
         cleanup();
-        throw std::runtime_error("Failed to bind GPU to VFIO driver.");
+        throw std::runtime_error("Static binding required - GPU not isolated.");
     }
+
+    // GPU is bound to vfio-pci - static binding is working!
+    std::cout << "[VxM] GPU " << gpu.pciAddress << " is bound to vfio-pci (static binding active)." << std::endl;
     m_boundDevices.push_back(gpu.pciAddress);
 
-    if (!audioManager.bindToVfio()) {
-        std::cerr << "[Error] Failed to bind GPU Audio to VFIO." << std::endl;
-        std::cerr << "        The Audio device shares the IOMMU group with the GPU." << std::endl;
-        std::cerr << "        The VM cannot start unless ALL devices in the group are isolated." << std::endl;
+    // Check audio device
+    if (!audioManager.isBoundToVfio()) {
+        std::cerr << "\n[Error] GPU Audio device is not bound to vfio-pci." << std::endl;
+        std::cerr << "        Audio: " << gpu.audioPciAddress << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "        The audio device shares the IOMMU group with the GPU." << std::endl;
+        std::cerr << "        Both must be bound to vfio-pci for passthrough to work." << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "        This should have been handled automatically by static binding." << std::endl;
+        std::cerr << "        Please check your initramfs configuration." << std::endl;
+        std::cerr << std::endl;
         cleanup();
-        throw std::runtime_error("Failed to bind GPU Audio.");
-    } else {
-        m_boundDevices.push_back(gpu.audioPciAddress);
+        throw std::runtime_error("GPU Audio not bound to vfio-pci.");
     }
+
+    std::cout << "[VxM] GPU Audio " << gpu.audioPciAddress << " is bound to vfio-pci." << std::endl;
+    m_boundDevices.push_back(gpu.audioPciAddress);
 
     // FIX: Set permissions on VFIO devices so unprivileged QEMU can access them
     // After binding devices to vfio-pci, we need to make /dev/vfio/* accessible
@@ -898,6 +906,19 @@ void VirtualMachine::start()
     std::cout << "[VxM] Input Devices Detected:" << std::endl;
     for (const auto &dev : inputDevices) {
         std::cout << "      " << (dev.type == InputType::Keyboard ? "[KBD]" : "[MSE]") << " " << dev.path << std::endl;
+    }
+
+    // FIX: Set permissions on input devices so unprivileged QEMU can access them
+    if (sudoUser && sudoUser[0] != '\0') {
+        struct passwd* pwd = getpwnam(sudoUser);
+        if (pwd) {
+            for (const auto &dev : inputDevices) {
+                if (chown(dev.path.c_str(), pwd->pw_uid, pwd->pw_gid) != 0) {
+                    std::cerr << "[Warning] Failed to change ownership of " << dev.path
+                              << ": " << strerror(errno) << std::endl;
+                }
+            }
+        }
     }
 
     if (inputDevices.empty()) {

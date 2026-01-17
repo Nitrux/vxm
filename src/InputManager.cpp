@@ -119,8 +119,8 @@ std::vector<std::string> InputManager::generateQemuArgs(const std::vector<InputD
             // First keyboard acts as the toggle master
             // grab_all=on means it grabs other devices (like the mouse) when toggled
             // repeat=on enables key repeat in guest
-            // grab_toggle=ctrl-ctrl allows Left Ctrl + Right Ctrl to toggle grab
-            arg += ",grab_all=on,repeat=on,grab_toggle=ctrl-ctrl";
+            // grab-toggle=ctrl-ctrl allows Left Ctrl + Right Ctrl to toggle grab
+            arg += ",grab_all=on,repeat=on,grab-toggle=ctrl-ctrl";
             hasKeyboard = true;
         } else if (device.type == InputType::Mouse) {
             hasMouse = true;
