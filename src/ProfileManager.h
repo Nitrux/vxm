@@ -30,8 +30,8 @@ struct Profile
     // DDC/CI monitor switching
     bool ddcEnabled = false;           // Enable DDC/CI monitor switching
     std::string ddcMonitor;            // Monitor identifier (e.g., "DP-1", "HDMI-1")
-    uint8_t ddcHostInput = 0x0F;       // Input source for Linux (default: DP-1)
-    uint8_t ddcGuestInput = 0x11;      // Input source for Windows (default: HDMI-1)
+    uint8_t ddcHostInput = 0x0F;       // Input source for host OS (default: DP-1)
+    uint8_t ddcGuestInput = 0x11;      // Input source for guest OS (default: HDMI-1)
 };
 
 class ProfileManager

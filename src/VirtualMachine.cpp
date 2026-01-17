@@ -222,9 +222,9 @@ bool VirtualMachine::checkRequirements() const
     std::cout << "[VxM] Found OVMF CODE: " << Config::OvmfCodePath << std::endl;
     std::cout << "[VxM] Found OVMF VARS: " << Config::OvmfVarsTemplatePath << std::endl;
 
-    // 2. Check Windows ISO
-    if (!fs::exists(Config::WindowsIso)) {
-        std::cerr << "[Error] Windows ISO not found at: " << Config::WindowsIso << std::endl;
+    // 2. Check Guest OS ISO
+    if (!fs::exists(Config::GuestIso)) {
+        std::cerr << "[Error] Guest OS ISO not found at: " << Config::GuestIso << std::endl;
         return false;
     }
 
@@ -589,7 +589,7 @@ void VirtualMachine::initializeCrate()
     fs::create_directories(Config::TpmStateDir);
 
     // Create C: Drive using fork/exec to avoid command injection
-    if (!fs::exists(Config::WindowsImage)) {
+    if (!fs::exists(Config::GuestImage)) {
         std::cout << "[VxM] Creating C: Drive (" << Config::DiskSizeGb << "GB)..." << std::endl;
 
         pid_t pid = fork();
@@ -600,7 +600,7 @@ void VirtualMachine::initializeCrate()
             std::string sizeArg = std::to_string(Config::DiskSizeGb) + "G";
             execlp("qemu-img", "qemu-img", "create", "-f", "raw",
                    "-o", "preallocation=full",
-                   Config::WindowsImage.string().c_str(),
+                   Config::GuestImage.string().c_str(),
                    sizeArg.c_str(), nullptr);
             // If execlp returns, it failed
             std::cerr << "[Error] Failed to execute qemu-img" << std::endl;
@@ -612,7 +612,7 @@ void VirtualMachine::initializeCrate()
             if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
                 throw std::runtime_error("Failed to create disk image.");
             }
-            fixFileOwnership(Config::WindowsImage);
+            fixFileOwnership(Config::GuestImage);
         }
     }
 
@@ -662,20 +662,19 @@ void VirtualMachine::initializeCrate()
         }
     }
 
-    // Check for Windows ISO and provide guidance
-    if (!fs::exists(Config::WindowsIso)) {
-        std::cout << "\n[VxM] Windows ISO not found." << std::endl;
-        std::cout << "      Please obtain a Windows installation ISO and place it at:" << std::endl;
-        std::cout << "      " << Config::WindowsIso << std::endl;
-        std::cout << "\n      You can download Windows 11 from:" << std::endl;
-        std::cout << "      https://www.microsoft.com/software-download/windows11" << std::endl;
-        std::cout << "\n      For Windows 10:" << std::endl;
-        std::cout << "      https://www.microsoft.com/software-download/windows10ISO" << std::endl;
-        
-        std::cout << "\n      [Tip] For better VM performance, consider using a playbook to" << std::endl;
-        std::cout << "            debloat Windows, such as:" << std::endl;
-        std::cout << "            - AtlasOS: https://atlasos.net" << std::endl;
-        std::cout << "            - ReviOS:  https://revi.cc" << std::endl;
+    // Check for Guest OS ISO and provide guidance
+    if (!fs::exists(Config::GuestIso)) {
+        std::cout << "\n[VxM] Guest OS ISO not found." << std::endl;
+        std::cout << "      Please obtain an installation ISO and place it at:" << std::endl;
+        std::cout << "      " << Config::GuestIso << std::endl;
+        std::cout << "\n      For a guest OS, you can use:" << std::endl;
+        std::cout << "      - Windows 11: https://www.microsoft.com/software-download/windows11" << std::endl;
+        std::cout << "      - Windows 10: https://www.microsoft.com/software-download/windows10ISO" << std::endl;
+        std::cout << "      - Or any other OS that supports UEFI boot" << std::endl;
+
+        std::cout << "\n      [Tip] For better VM performance, consider optimized OS variants:" << std::endl;
+        std::cout << "            - AtlasOS: https://atlasos.net (Windows-based)" << std::endl;
+        std::cout << "            - ReviOS:  https://revi.cc (Windows-based)" << std::endl;
     }
 
     // Provide guidance about GPU ROM files for reset bug
@@ -925,10 +924,10 @@ void VirtualMachine::start()
         std::cerr << "[Warning] No input devices found. You will have no control over the VM!" << std::endl;
     }
 
-    // 4. Start TPM 2.0 emulator for Windows 11 compatibility
+    // 4. Start TPM 2.0 emulator for guest OS compatibility
     m_tpmPid = startTpmEmulator();
     if (m_tpmPid < 0) {
-        std::cerr << "[Warning] Failed to start TPM emulator. Windows 11 may not install." << std::endl;
+        std::cerr << "[Warning] Failed to start TPM emulator. Some guest OSes may require TPM support." << std::endl;
     }
 
     // STATE PERSISTENCE:
@@ -1000,12 +999,12 @@ void VirtualMachine::start()
 
     // Disk (using virtio-blk, no SCSI controller needed)
     args.push_back("-drive");
-    args.push_back("if=none,id=disk0,cache=none,format=raw,aio=native,file=" + Config::WindowsImage.string());
+    args.push_back("if=none,id=disk0,cache=none,format=raw,aio=native,file=" + Config::GuestImage.string());
     args.push_back("-device"); args.push_back("virtio-blk-pci,drive=disk0");
 
     // ISOs
     args.push_back("-drive");
-    args.push_back("file=" + Config::WindowsIso.string() + ",media=cdrom,index=0");
+    args.push_back("file=" + Config::GuestIso.string() + ",media=cdrom,index=0");
     args.push_back("-drive");
     args.push_back("file=" + Config::VirtioIso.string() + ",media=cdrom,index=1");
 

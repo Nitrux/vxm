@@ -24,8 +24,8 @@ namespace Config
     const std::filesystem::path RomsDir = VxmDir / "roms";
 
     // Files
-    const std::filesystem::path WindowsImage = ImageDir / "win.img";
-    const std::filesystem::path WindowsIso = IsoDir / "win_install.iso";
+    const std::filesystem::path GuestImage = ImageDir / "guest.img";
+    const std::filesystem::path GuestIso = IsoDir / "guest_install.iso";
     const std::filesystem::path VirtioIso = IsoDir / "virtio_drivers.iso";
 
     // OVMF Firmware Paths - Multiple possible locations
