@@ -43,15 +43,10 @@ std::vector<InputDevice> InputManager::detectDevices() const
 
         std::string name = entry.path().filename().string();
 
-        // Skip "if01", "if02" extra interfaces often found on composite devices
-        // Also skip "if03", "if04", etc. to be more robust
-        if (name.find("if0") != std::string::npos) {
-            size_t ifPos = name.find("if0");
-            if (ifPos != std::string::npos && ifPos + 3 < name.length() &&
-                std::isdigit(static_cast<unsigned char>(name[ifPos + 3]))) {
-                continue;
-            }
-        }
+        // FIX: REMOVED "if01" FILTERING.
+        // High-end keyboards (NKRO) often send actual events on if01 or if02,
+        // while if00 is just a boot/BIOS compatibility interface.
+        // Filtering these out causes the VM to grab a silent device.
 
         // Resolve symlink to actual /dev/input/eventX device
         std::string resolvedPath;
@@ -116,12 +111,12 @@ std::vector<std::string> InputManager::generateQemuArgs(const std::vector<InputD
         std::string arg = "input-linux,id=" + id + ",evdev=" + device.path;
 
         if (device.type == InputType::Keyboard && !hasKeyboard) {
-            // Keyboard: Enable repeat for key press handling in guest
-            // Without grab-toggle, the device is grabbed immediately and exclusively
-            arg += ",repeat=on";
+            // grab_all=on: The master keyboard device grabs ALL other input-linux devices (mice included).
+            // grab-toggle=ctrl-ctrl: Double tapping Ctrl releases input back to Host.
+            arg += ",grab_all=on,repeat=on,grab-toggle=ctrl-ctrl";
             hasKeyboard = true;
         } else if (device.type == InputType::Mouse) {
-            // Mouse: No special parameters needed, will be grabbed immediately
+            // Mouse is grabbed automatically by the keyboard's grab_all=on
             hasMouse = true;
         }
 
