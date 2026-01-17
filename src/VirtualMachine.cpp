@@ -18,6 +18,7 @@
 #include <unistd.h> // execvp, fork, chown
 #include <sys/wait.h>
 #include <sys/stat.h> // lchown
+#include <sys/resource.h> // setrlimit
 #include <pwd.h>    // getpwnam
 #include <cstdlib>  // system
 #include <cctype>   // isdigit
@@ -160,6 +161,29 @@ void VirtualMachine::cleanup()
             hugepagesFile << m_originalHugepages;
             hugepagesFile.close();
             std::cout << "[VxM] Hugepages restored." << std::endl;
+
+            // Unmount /dev/hugepages if it's mounted
+            if (std::filesystem::exists("/dev/hugepages")) {
+                std::ifstream mounts("/proc/mounts");
+                std::string line;
+                bool isMounted = false;
+                while (std::getline(mounts, line)) {
+                    if (line.find("/dev/hugepages") != std::string::npos &&
+                        line.find("hugetlbfs") != std::string::npos) {
+                        isMounted = true;
+                        break;
+                    }
+                }
+                mounts.close();
+
+                if (isMounted) {
+                    int ret = std::system("umount /dev/hugepages 2>/dev/null");
+                    if (ret != 0) {
+                        std::cerr << "[Warning] Failed to unmount /dev/hugepages" << std::endl;
+                    }
+                }
+            }
+
             m_hugepagesModified = false;
             m_originalHugepages = 0; // Mark as already restored
         } else {
@@ -455,6 +479,82 @@ bool VirtualMachine::reserveHugepages(uint64_t ramGb)
     if (allocatedPages >= requiredPages) {
         std::cout << "[VxM] Successfully allocated " << allocatedPages << " hugepages." << std::endl;
         m_hugepagesModified = true;
+
+        // FIX: Ensure /dev/hugepages is mounted and accessible
+        // After we drop privileges, QEMU needs to be able to open files in /dev/hugepages
+        const char* sudoUser = std::getenv("SUDO_USER");
+        if (sudoUser && sudoUser[0] != '\0') {
+            struct passwd* pwd = getpwnam(sudoUser);
+            if (pwd) {
+                // Build mount command with user ownership
+                std::string mountCmd = "mount -t hugetlbfs -o uid=" +
+                                       std::to_string(pwd->pw_uid) +
+                                       ",gid=" + std::to_string(pwd->pw_gid) +
+                                       ",mode=1770 hugetlbfs /dev/hugepages 2>/dev/null";
+
+                // First, ensure /dev/hugepages exists and is mounted
+                if (!std::filesystem::exists("/dev/hugepages")) {
+                    // Create the directory if it doesn't exist
+                    if (std::filesystem::create_directories("/dev/hugepages")) {
+                        // Mount hugetlbfs on /dev/hugepages
+                        int mountResult = std::system(mountCmd.c_str());
+                        if (mountResult != 0) {
+                            std::cerr << "[Warning] Failed to mount hugetlbfs at /dev/hugepages" << std::endl;
+                            std::cerr << "          Falling back to standard memory allocation." << std::endl;
+                            m_hugepagesModified = false;
+                            return false;
+                        }
+                    } else {
+                        std::cerr << "[Warning] Failed to create /dev/hugepages directory" << std::endl;
+                        std::cerr << "          Falling back to standard memory allocation." << std::endl;
+                        m_hugepagesModified = false;
+                        return false;
+                    }
+                } else {
+                    // Directory exists, just change ownership
+                    // Check if it's already mounted
+                    std::ifstream mounts("/proc/mounts");
+                    std::string line;
+                    bool isMounted = false;
+                    while (std::getline(mounts, line)) {
+                        if (line.find("/dev/hugepages") != std::string::npos &&
+                            line.find("hugetlbfs") != std::string::npos) {
+                            isMounted = true;
+                            break;
+                        }
+                    }
+
+                    if (!isMounted) {
+                        // Mount with user ownership
+                        int mountResult = std::system(mountCmd.c_str());
+                        if (mountResult != 0) {
+                            std::cerr << "[Warning] Failed to mount hugetlbfs at /dev/hugepages" << std::endl;
+                            std::cerr << "          Falling back to standard memory allocation." << std::endl;
+                            m_hugepagesModified = false;
+                            return false;
+                        }
+                    } else {
+                        // Already mounted, just change ownership
+                        if (chown("/dev/hugepages", pwd->pw_uid, pwd->pw_gid) != 0) {
+                            std::cerr << "[Warning] Failed to change ownership of /dev/hugepages: "
+                                      << strerror(errno) << std::endl;
+                            std::cerr << "          Trying to remount with correct ownership..." << std::endl;
+
+                            // Try to unmount and remount with correct ownership
+                            std::system("umount /dev/hugepages 2>/dev/null");
+                            int mountResult = std::system(mountCmd.c_str());
+                            if (mountResult != 0) {
+                                std::cerr << "[Warning] Failed to remount hugetlbfs" << std::endl;
+                                std::cerr << "          Falling back to standard memory allocation." << std::endl;
+                                m_hugepagesModified = false;
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         return true;
     } else {
         // CRITICAL FIX: If we can't allocate enough hugepages, fail gracefully
@@ -691,6 +791,31 @@ void VirtualMachine::start()
     if (!gpuManager.bindToVfio(gpu.isMobileGpu)) {
         // Offer static binding as a fallback for laptops/hybrid graphics (only if TTY available)
         if (isatty(STDIN_FILENO)) {
+            // First check if static binding is already enabled
+            bool staticBindAlreadyEnabled = false;
+            std::ifstream grubFile("/etc/default/grub");
+            if (grubFile.is_open()) {
+                std::string line;
+                while (std::getline(grubFile, line)) {
+                    if (line.find("vxm.static_bind=1") != std::string::npos) {
+                        staticBindAlreadyEnabled = true;
+                        break;
+                    }
+                }
+                grubFile.close();
+            }
+
+            if (staticBindAlreadyEnabled) {
+                std::cout << "\n[VxM] Static Binding is already enabled in GRUB." << std::endl;
+                std::cout << "      However, the GPU is not bound to vfio-pci." << std::endl;
+                std::cout << "      This means:" << std::endl;
+                std::cout << "      - You may not have rebooted after enabling static binding" << std::endl;
+                std::cout << "      - The vxm.static_bind=1 parameter may not be working correctly" << std::endl;
+                std::cout << "\n      Please REBOOT your system for static binding to take effect." << std::endl;
+                cleanup();
+                throw std::runtime_error("Static binding configured but not active - reboot required.");
+            }
+
             std::cout << "\n[VxM] Troubleshooting: Laptop / Hybrid Graphics Detected?" << std::endl;
             std::cout << "      On some laptops (Optimus/Muxless), the GPU cannot be detached at runtime." << std::endl;
             std::cout << "      We can enable 'Static Binding' to seize the GPU at boot time instead." << std::endl;
@@ -740,6 +865,31 @@ void VirtualMachine::start()
         throw std::runtime_error("Failed to bind GPU Audio.");
     } else {
         m_boundDevices.push_back(gpu.audioPciAddress);
+    }
+
+    // FIX: Set permissions on VFIO devices so unprivileged QEMU can access them
+    // After binding devices to vfio-pci, we need to make /dev/vfio/* accessible
+    const char* sudoUser = std::getenv("SUDO_USER");
+    if (sudoUser && sudoUser[0] != '\0') {
+        struct passwd* pwd = getpwnam(sudoUser);
+        if (pwd) {
+            // Change ownership of /dev/vfio/vfio (the VFIO container)
+            if (chown("/dev/vfio/vfio", pwd->pw_uid, pwd->pw_gid) != 0) {
+                std::cerr << "[Warning] Failed to change ownership of /dev/vfio/vfio: "
+                          << strerror(errno) << std::endl;
+            }
+
+            // Change ownership of all VFIO group devices
+            // These are created when devices are bound to vfio-pci
+            for (const auto& entry : std::filesystem::directory_iterator("/dev/vfio")) {
+                if (entry.path().filename() != "vfio") {
+                    if (chown(entry.path().c_str(), pwd->pw_uid, pwd->pw_gid) != 0) {
+                        std::cerr << "[Warning] Failed to change ownership of " << entry.path()
+                                  << ": " << strerror(errno) << std::endl;
+                    }
+                }
+            }
+        }
     }
 
     InputManager inputMgr;
@@ -926,7 +1076,7 @@ void VirtualMachine::start()
     // CRITICAL SECURITY: Drop root privileges before executing QEMU
     // Running QEMU as root is a severe security risk. If a VM escape occurs,
     // the attacker immediately gains root access to the host.
-    const char* sudoUser = std::getenv("SUDO_USER");
+    sudoUser = std::getenv("SUDO_USER");  // Reuse sudoUser from earlier
     if (geteuid() == 0 && sudoUser && sudoUser[0] != '\0') {
         // Get the original user's UID and GID
         struct passwd* pwd = getpwnam(sudoUser);
@@ -945,6 +1095,17 @@ void VirtualMachine::start()
 
         setenv("XDG_RUNTIME_DIR", runtimeDir.c_str(), 1);
         setenv("PULSE_SERVER", ("unix:" + pulseSocket).c_str(), 1);
+
+        // VFIO FIX: Increase locked memory limit before dropping privileges
+        // VFIO needs to lock GPU MMIO regions in memory, which can be large (several GB)
+        // Set to unlimited while we're still root, this persists after dropping privileges
+        struct rlimit memlock_limit;
+        memlock_limit.rlim_cur = RLIM_INFINITY;
+        memlock_limit.rlim_max = RLIM_INFINITY;
+        if (setrlimit(RLIMIT_MEMLOCK, &memlock_limit) != 0) {
+            std::cerr << "[Warning] Failed to set RLIMIT_MEMLOCK: " << strerror(errno) << std::endl;
+            std::cerr << "          VFIO may fail to allocate memory for GPU MMIO regions." << std::endl;
+        }
 
         // Drop privileges: set GID first, then UID (order matters!)
         if (setgid(targetGid) != 0) {
