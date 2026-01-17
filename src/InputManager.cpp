@@ -116,13 +116,12 @@ std::vector<std::string> InputManager::generateQemuArgs(const std::vector<InputD
         std::string arg = "input-linux,id=" + id + ",evdev=" + device.path;
 
         if (device.type == InputType::Keyboard && !hasKeyboard) {
-            // First keyboard acts as the toggle master
-            // grab_all=on means it grabs other devices (like the mouse) when toggled
-            // repeat=on enables key repeat in guest
-            // grab-toggle=ctrl-ctrl allows Left Ctrl + Right Ctrl to toggle grab
-            arg += ",grab_all=on,repeat=on,grab-toggle=ctrl-ctrl";
+            // Keyboard: Enable repeat for key press handling in guest
+            // Without grab-toggle, the device is grabbed immediately and exclusively
+            arg += ",repeat=on";
             hasKeyboard = true;
         } else if (device.type == InputType::Mouse) {
+            // Mouse: No special parameters needed, will be grabbed immediately
             hasMouse = true;
         }
 
@@ -132,11 +131,12 @@ std::vector<std::string> InputManager::generateQemuArgs(const std::vector<InputD
 
     // Warn if essential devices are missing
     if (!hasKeyboard) {
-        std::cerr << "[Warning] No keyboard detected for passthrough. You will not be able to toggle input capture!" << std::endl;
-        std::cerr << "          Input capture toggle requires: Left Ctrl + Right Ctrl" << std::endl;
+        std::cerr << "[Warning] No keyboard detected for passthrough!" << std::endl;
+        std::cerr << "          You will have no keyboard control in the VM." << std::endl;
     }
     if (!hasMouse) {
-        std::cerr << "[Warning] No mouse detected for passthrough. Mouse input may not work correctly." << std::endl;
+        std::cerr << "[Warning] No mouse detected for passthrough!" << std::endl;
+        std::cerr << "          You will have no mouse control in the VM." << std::endl;
     }
 
     return args;

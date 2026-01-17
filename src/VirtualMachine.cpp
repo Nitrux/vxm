@@ -1071,8 +1071,11 @@ void VirtualMachine::start()
         }
     }
 
-    // Display
-    args.push_back("-vnc"); args.push_back(":0");
+    // Display: Use the passed-through GPU directly
+    // -vga none disables QEMU's emulated VGA
+    // -nographic is REQUIRED for GPU passthrough to display on physical monitors
+    args.push_back("-vga"); args.push_back("none");
+    args.push_back("-nographic");
 
     // DDC/CI
     if (profile.ddcEnabled && !profile.ddcMonitor.empty()) {
@@ -1087,6 +1090,15 @@ void VirtualMachine::start()
     // Execute QEMU
     std::cout << "[VxM] Igniting..." << std::endl;
     std::cout << "      QEMU starting with PID: " << getpid() << std::endl;
+
+    // Debug: Print QEMU command (optional, can be removed later)
+    if (std::getenv("VXM_DEBUG")) {
+        std::cout << "\n[VxM Debug] QEMU command:" << std::endl;
+        for (const auto &arg : args) {
+            std::cout << arg << " ";
+        }
+        std::cout << "\n" << std::endl;
+    }
 
     std::vector<char*> argv;
     for (const auto &arg : args) {
