@@ -670,9 +670,9 @@ void VirtualMachine::initializeCrate()
         std::cout << "\n      For a guest OS, you can use:" << std::endl;
         std::cout << "      - Windows 11: https://www.microsoft.com/software-download/windows11" << std::endl;
         std::cout << "      - Windows 10: https://www.microsoft.com/software-download/windows10ISO" << std::endl;
-        std::cout << "      - Or any other OS that supports UEFI boot" << std::endl;
+        std::cout << "      - Or any other OS (Linux, BSD, etc.) that supports UEFI boot" << std::endl;
 
-        std::cout << "\n      [Tip] For better VM performance, consider optimized OS variants:" << std::endl;
+        std::cout << "\n      [Tip] For better Windows VM performance, consider optimized OS variants:" << std::endl;
         std::cout << "            - AtlasOS: https://atlasos.net (Windows-based)" << std::endl;
         std::cout << "            - ReviOS:  https://revi.cc (Windows-based)" << std::endl;
     }
