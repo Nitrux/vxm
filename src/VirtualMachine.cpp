@@ -780,6 +780,7 @@ void VirtualMachine::start()
     // 3. Check for GPU ROM requirements (reset bug)
     if (gpu.needsRom) {
         if (gpu.romPath.empty()) {
+            std::cout << "      GPU ROM: NOT LOADED (AMD reset bug detected)" << std::endl;
             std::cerr << "\n[Warning] Your GPU (" << gpu.vendorId << ":" << gpu.deviceId << ") may require a patched ROM file." << std::endl;
             std::cerr << "          AMD Polaris/Vega cards often suffer from the 'reset bug'." << std::endl;
             std::cerr << "          If the VM fails to start or the host hangs, you need to:" << std::endl;
@@ -788,8 +789,10 @@ void VirtualMachine::start()
             std::cerr << "          3. Place the patched ROM at: ~/VxM/roms/" << gpu.deviceId << ".rom" << std::endl;
             std::cerr << "\n          Proceeding without ROM file (may cause instability)...\n" << std::endl;
         } else {
-            std::cout << "      GPU ROM: " << gpu.romPath << std::endl;
+            std::cout << "      GPU ROM: " << gpu.romPath << " (LOADED)" << std::endl;
         }
+    } else {
+        std::cout << "      GPU ROM: Not required for this GPU" << std::endl;
     }
 
     DeviceManager gpuManager(gpu.pciAddress);
@@ -957,12 +960,20 @@ void VirtualMachine::start()
     // vmport=off: Disables VMware I/O port (helps hide virtualization)
     args.push_back("-machine"); args.push_back("q35,accel=kvm,kernel_irqchip=on,vmport=off");
 
-    // CPU with hypervisor hiding for NVIDIA driver compatibility
-    // kvm=off: Hides KVM signature
-    // hv_vendor_id: Spoofs Hyper-V vendor ID to hide virtualization
-    // -hypervisor: Hides CPUID hypervisor bit (CRITICAL for NVIDIA drivers)
-    // +kvm_pv_unhalt: Disables KVM paravirtualization unhalt feature
-    std::string cpuArg = "host,kvm=off,hv_vendor_id=1234567890ab,hv_vapic,hv_time,hv_relaxed,hv_spinlocks=0x1fff,-hypervisor,+kvm_pv_unhalt";
+    // CPU configuration with Hyper-V enlightenments for Windows 11 compatibility
+    // Modern NVIDIA drivers (465+) and Windows 11 work BETTER when they know they're virtualized
+    // Rather than hiding the hypervisor, we present as Hyper-V which Windows trusts
+    //
+    // IMPORTANT: Old guides recommend kvm=off,-hypervisor but this causes Error 43 on modern systems
+    // because it creates an inconsistent CPU state (Hyper-V features enabled but hypervisor bit hidden)
+    //
+    // hv_vendor_id: Identifies as Hyper-V (Windows trusts this)
+    // hv_relaxed: Relaxed timing for timer interrupts (reduces CPU usage)
+    // hv_vapic: Virtual APIC (performance optimization)
+    // hv_time: Hyper-V time source (better time sync)
+    // hv_spinlocks: Spinlock optimization for Windows SMP
+    // +kvm_pv_unhalt: Prevents busy-waiting on halted vCPUs
+    std::string cpuArg = "host,hv_vendor_id=1234567890ab,hv_relaxed,hv_vapic,hv_time,hv_spinlocks=0x1fff,+kvm_pv_unhalt";
 
     // CPU vendor-specific optimizations and security features
     if (cpu.isRyzen) {
@@ -1010,6 +1021,7 @@ void VirtualMachine::start()
     std::string gpuDeviceArg = "vfio-pci,host=" + gpu.pciAddress + ",id=hostdev1,bus=root_port1,addr=0x00,multifunction=on";
     if (gpu.needsRom && !gpu.romPath.empty()) {
         gpuDeviceArg += ",romfile=" + gpu.romPath;
+        std::cout << "[VxM] Using GPU ROM file: " << gpu.romPath << std::endl;
     }
     args.push_back(gpuDeviceArg);
 
