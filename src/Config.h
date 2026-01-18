@@ -30,23 +30,46 @@ namespace Config
 
     // OVMF Firmware Paths - Multiple possible locations
     // Different distributions use different paths/cases
+    // Secure Boot variants are prioritized for Windows 11 compatibility
     const std::vector<std::filesystem::path> OvmfCodeSearchPaths = {
-        "/usr/share/OVMF/OVMF_CODE_4M.fd",        // 4M variant (all caps)
-        "/usr/share/OVMF/OVMF_CODE.fd",           // Standard (all caps)
-        "/usr/share/ovmf/OVMF_CODE_4M.fd",        // 4M variant (lowercase directory)
-        "/usr/share/ovmf/OVMF_CODE.fd",           // Lowercase directory
-        "/usr/share/ovmf/OVMF.fd",                // Alternative name
-        "/usr/share/qemu/OVMF.fd",                // QEMU directory
-        "/usr/share/edk2/ovmf/OVMF_CODE.fd"       // EDK2 structure
+        "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd",    // 4M Secure Boot variant (all caps)
+        "/usr/share/OVMF/OVMF_CODE.secboot.fd",       // Secure Boot variant (all caps)
+        "/usr/share/OVMF/OVMF_CODE_4M.ms.fd",         // 4M with MS keys (all caps)
+        "/usr/share/OVMF/OVMF_CODE.ms.fd",            // With MS keys (all caps)
+        "/usr/share/ovmf/x64/OVMF_CODE.secboot.fd",   // Arch/Fedora x64 Secure Boot
+        "/usr/share/ovmf/OVMF_CODE_4M.secboot.fd",    // 4M Secure Boot (lowercase)
+        "/usr/share/ovmf/OVMF_CODE.secboot.fd",       // Secure Boot (lowercase)
+        "/usr/share/ovmf/OVMF_CODE_4M.ms.fd",         // 4M with MS keys (lowercase)
+        "/usr/share/ovmf/OVMF_CODE.ms.fd",            // With MS keys (lowercase)
+        "/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd",  // EDK2 Secure Boot
+        "/usr/share/qemu/ovmf-x86_64-smm-ms-code.bin", // Ubuntu/Debian naming
+        "/usr/share/OVMF/OVMF_CODE_4M.fd",            // 4M variant (all caps)
+        "/usr/share/OVMF/OVMF_CODE.fd",               // Standard (all caps)
+        "/usr/share/ovmf/OVMF_CODE_4M.fd",            // 4M variant (lowercase directory)
+        "/usr/share/ovmf/OVMF_CODE.fd",               // Lowercase directory
+        "/usr/share/ovmf/OVMF.fd",                    // Alternative name
+        "/usr/share/qemu/OVMF.fd",                    // QEMU directory
+        "/usr/share/edk2/ovmf/OVMF_CODE.fd"           // EDK2 structure
     };
 
     const std::vector<std::filesystem::path> OvmfVarsSearchPaths = {
-        "/usr/share/OVMF/OVMF_VARS_4M.fd",        // 4M variant (all caps)
-        "/usr/share/OVMF/OVMF_VARS.fd",           // Standard (all caps)
-        "/usr/share/ovmf/OVMF_VARS_4M.fd",        // 4M variant (lowercase directory)
-        "/usr/share/ovmf/OVMF_VARS.fd",           // Lowercase directory
-        "/usr/share/edk2/ovmf/OVMF_VARS.fd",      // EDK2 structure
-        "/usr/share/qemu/OVMF_VARS.fd"            // QEMU directory
+        "/usr/share/OVMF/OVMF_VARS_4M.secboot.fd",    // 4M Secure Boot variant (all caps)
+        "/usr/share/OVMF/OVMF_VARS.secboot.fd",       // Secure Boot variant (all caps)
+        "/usr/share/OVMF/OVMF_VARS_4M.ms.fd",         // 4M with MS keys (all caps)
+        "/usr/share/OVMF/OVMF_VARS.ms.fd",            // With MS keys (all caps)
+        "/usr/share/ovmf/x64/OVMF_VARS.secboot.fd",   // Arch/Fedora x64 Secure Boot
+        "/usr/share/ovmf/OVMF_VARS_4M.secboot.fd",    // 4M Secure Boot (lowercase)
+        "/usr/share/ovmf/OVMF_VARS.secboot.fd",       // Secure Boot (lowercase)
+        "/usr/share/ovmf/OVMF_VARS_4M.ms.fd",         // 4M with MS keys (lowercase)
+        "/usr/share/ovmf/OVMF_VARS.ms.fd",            // With MS keys (lowercase)
+        "/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd",  // EDK2 Secure Boot
+        "/usr/share/qemu/ovmf-x86_64-smm-ms-vars.bin", // Ubuntu/Debian naming
+        "/usr/share/OVMF/OVMF_VARS_4M.fd",            // 4M variant (all caps)
+        "/usr/share/OVMF/OVMF_VARS.fd",               // Standard (all caps)
+        "/usr/share/ovmf/OVMF_VARS_4M.fd",            // 4M variant (lowercase directory)
+        "/usr/share/ovmf/OVMF_VARS.fd",               // Lowercase directory
+        "/usr/share/edk2/ovmf/OVMF_VARS.fd",          // EDK2 structure
+        "/usr/share/qemu/OVMF_VARS.fd"                // QEMU directory
     };
 
     // These will be set at runtime by findOvmfPaths()
@@ -103,6 +126,25 @@ namespace Config
         };
 
         std::vector<OvmfPair> possiblePairs = {
+            // PRIORITY: Secure Boot variants first (for Windows 11 compatibility)
+            // 4M Secure Boot variants (all caps)
+            {"/usr/share/OVMF/OVMF_CODE_4M.secboot.fd", "/usr/share/OVMF/OVMF_VARS_4M.secboot.fd"},
+            {"/usr/share/OVMF/OVMF_CODE.secboot.fd", "/usr/share/OVMF/OVMF_VARS.secboot.fd"},
+            // 4M with Microsoft keys (all caps)
+            {"/usr/share/OVMF/OVMF_CODE_4M.ms.fd", "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"},
+            {"/usr/share/OVMF/OVMF_CODE.ms.fd", "/usr/share/OVMF/OVMF_VARS.ms.fd"},
+            // Arch/Fedora x64 Secure Boot
+            {"/usr/share/ovmf/x64/OVMF_CODE.secboot.fd", "/usr/share/ovmf/x64/OVMF_VARS.secboot.fd"},
+            // Secure Boot variants (lowercase directory)
+            {"/usr/share/ovmf/OVMF_CODE_4M.secboot.fd", "/usr/share/ovmf/OVMF_VARS_4M.secboot.fd"},
+            {"/usr/share/ovmf/OVMF_CODE.secboot.fd", "/usr/share/ovmf/OVMF_VARS.secboot.fd"},
+            {"/usr/share/ovmf/OVMF_CODE_4M.ms.fd", "/usr/share/ovmf/OVMF_VARS_4M.ms.fd"},
+            {"/usr/share/ovmf/OVMF_CODE.ms.fd", "/usr/share/ovmf/OVMF_VARS.ms.fd"},
+            // EDK2 Secure Boot
+            {"/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd", "/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd"},
+            // Ubuntu/Debian naming (with SMM and MS keys)
+            {"/usr/share/qemu/ovmf-x86_64-smm-ms-code.bin", "/usr/share/qemu/ovmf-x86_64-smm-ms-vars.bin"},
+            // FALLBACK: Standard variants (no Secure Boot)
             // 4M variants (all caps)
             {"/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"},
             // 4M variants (lowercase directory)
