@@ -6,7 +6,7 @@
 
 VxM is a hypervisor orchestration utility for Nitrux, engineered to enable concurrent, hardware-accelerated guest execution on multi-GPU workstations. Leveraging VFIO PCI passthrough, it enforces IOMMU isolation to dedicate discrete graphics resources to guest domains.
 
-This architecture circumvents virtualization overhead and emulation layers, granting the guest OS direct hardware control for bare-metal performance characteristics within Nitrux’s immutable infrastructure.
+This architecture circumvents virtualization overhead and emulation layers, granting the guest OS direct hardware control for bare-metal performance characteristics within Nitrux's immutable infrastructure.
 
 ## Features
 
@@ -14,9 +14,9 @@ This architecture circumvents virtualization overhead and emulation layers, gran
 
 - **Dynamic VFIO Binding**: Runtime driver override to vfio-pci with automatic host rebinding, BDF normalization, and IOMMU group validation.
 
-- **DDC/CI Automation**: Writes VCP 0x60 commands to the monitor bus to trigger input source switching on VM state changes.
+- **DDC/CI Automation**: Writes VCP commands to the monitor bus to trigger input source switching on VM state changes.
 
-- **Latency Optimization**: Auto-provisions hugepages and initializes IVSHMEM (/dev/shm/looking-glass) for low-latency frame relay.
+- **Latency Optimization**: Auto-provisions hugepages and initializes IVSHMEM for low-latency frame relay.
 
 - **Firmware/TPM Lifecycle**: Heuristic detection for matching OVMF CODE/VARS pairs and managed swtpm socket execution for guest OS compatibility.
 
