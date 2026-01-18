@@ -40,6 +40,37 @@ This architecture circumvents virtualization overhead and emulation layers, gran
 * **Display:**
     * A monitor with two inputs (e.g., DP for host OS, HDMI for guest OS) OR two separate monitors.
 
+## Usage
+
+```
+Usage:
+  vxm [COMMAND] <options>
+
+Commands:
+  init                     Initialize storage, directory structure, and download required drivers.
+  start                    Boot the virtual machine. (requires root)
+  status                   Show current VM status and hardware binding state.
+  list-gpus                Scan system for available GPUs and display PCI addresses.
+  fingerprint              Display the system fingerprint (DMI UUID). (requires root)
+  config                   Update configuration and hardware profiles.
+  reset                    Remove all VxM files and configuration.
+
+Config options:
+  vxm config --set-gpu <PCI_ADDRESS|NAME>   Set specific GPU for passthrough
+  vxm config --enable-binding               Enable Static Binding (requires root + reboot)
+  vxm config --disable-binding              Disable Static Binding (requires root + reboot)
+
+Other options:
+  vxm list-gpus [--json]
+  vxm fingerprint [--json]
+  vxm status [--json]
+
+Notes:
+  - Commands requiring root: start, fingerprint, config --enable/disable-binding
+  - Use 'sudo -E vxm <command>' to preserve the user environment.
+  - Static Binding is REQUIRED for VxM. Enable it before first use.
+```
+
 # Licensing
 
 The license for this repository and its contents is **BSD-3-Clause**.
