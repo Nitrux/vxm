@@ -951,15 +951,34 @@ void VirtualMachine::start()
     std::vector<std::string> args;
     args.push_back("qemu-system-x86_64");
 
-    // Machine Type
+    // Machine Type with hypervisor hiding
     args.push_back("-name"); args.push_back(Config::VmName);
     args.push_back("-enable-kvm");
-    args.push_back("-machine"); args.push_back("q35,accel=kvm,kernel_irqchip=on");
+    // vmport=off: Disables VMware I/O port (helps hide virtualization)
+    args.push_back("-machine"); args.push_back("q35,accel=kvm,kernel_irqchip=on,vmport=off");
 
-    // CPU
-    std::string cpuArg = "host,kvm=off,hv_vendor_id=1234567890ab,hv_vapic,hv_time,hv_relaxed,hv_spinlocks=0x1fff";
+    // CPU with hypervisor hiding for NVIDIA driver compatibility
+    // kvm=off: Hides KVM signature
+    // hv_vendor_id: Spoofs Hyper-V vendor ID to hide virtualization
+    // -hypervisor: Hides CPUID hypervisor bit (CRITICAL for NVIDIA drivers)
+    // +kvm_pv_unhalt: Disables KVM paravirtualization unhalt feature
+    std::string cpuArg = "host,kvm=off,hv_vendor_id=1234567890ab,hv_vapic,hv_time,hv_relaxed,hv_spinlocks=0x1fff,-hypervisor,+kvm_pv_unhalt";
+
+    // CPU vendor-specific optimizations and security features
     if (cpu.isRyzen) {
-        cpuArg += ",+topoext,+ibpb"; // AMD specific flags
+        // AMD Ryzen flags:
+        // +topoext: Extended topology enumeration (required for proper core/thread detection)
+        // +ibpb: Indirect Branch Prediction Barrier (Spectre v2 mitigation)
+        // +virt-ssbd: Virtualized Speculative Store Bypass Disable (Spectre v4 mitigation)
+        // +pdpe1gb: 1GB page support (performance optimization)
+        cpuArg += ",+topoext,+ibpb,+virt-ssbd,+pdpe1gb";
+    } else {
+        // Intel flags:
+        // +pcid: Process-Context Identifiers (performance optimization for page tables)
+        // +spec-ctrl: Speculation Control (Spectre/Meltdown mitigations)
+        // +ssbd: Speculative Store Bypass Disable (Spectre v4 mitigation)
+        // +pdpe1gb: 1GB page support (performance optimization)
+        cpuArg += ",+pcid,+spec-ctrl,+ssbd,+pdpe1gb";
     }
     args.push_back("-cpu"); args.push_back(cpuArg);
 
