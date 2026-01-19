@@ -1136,7 +1136,7 @@ void VirtualMachine::start()
     }
     argv.push_back(nullptr);
 
-    // CRITICAL SECURITY: Drop root privileges before executing QEMU
+    // Drop root privileges before executing QEMU
     // Running QEMU as root is a severe security risk. If a VM escape occurs,
     // the attacker immediately gains root access to the host.
     sudoUser = std::getenv("SUDO_USER");  // Reuse sudoUser from earlier
@@ -1151,7 +1151,7 @@ void VirtualMachine::start()
         uid_t targetUid = pwd->pw_uid;
         gid_t targetGid = pwd->pw_gid;
 
-        // AUDIO FIX: Set up PulseAudio environment before dropping privileges
+        // Set up PulseAudio environment before dropping privileges
         // This ensures QEMU can connect to the user's PulseAudio server
         std::string runtimeDir = std::string("/run/user/") + std::to_string(targetUid);
         std::string pulseSocket = runtimeDir + "/pulse/native";
@@ -1159,7 +1159,7 @@ void VirtualMachine::start()
         setenv("XDG_RUNTIME_DIR", runtimeDir.c_str(), 1);
         setenv("PULSE_SERVER", ("unix:" + pulseSocket).c_str(), 1);
 
-        // VFIO FIX: Increase locked memory limit before dropping privileges
+        // Increase locked memory limit before dropping privileges
         // VFIO needs to lock GPU MMIO regions in memory, which can be large (several GB)
         // Set to unlimited while we're still root, this persists after dropping privileges
         struct rlimit memlock_limit;
