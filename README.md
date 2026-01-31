@@ -1,6 +1,4 @@
-# VxM — Nitrux Hypervisor Orchestrator
-
-![License](https://img.shields.io/badge/License-BSD--3--Clause-blue)
+# VxM — Nitrux Hypervisor Orchestrator | ![License](https://img.shields.io/badge/License-BSD--3--Clause-blue)
 
 # Introduction
 
