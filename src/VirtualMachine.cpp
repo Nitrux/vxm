@@ -20,8 +20,9 @@
 #include <sys/wait.h>
 #include <sys/stat.h> // lchown
 #include <sys/resource.h> // setrlimit
+#include <sys/file.h>     // flock
 #include <pwd.h>    // getpwnam
-#include <cstdlib>  // system
+#include <cstdlib>  // getenv
 #include <cctype>   // isdigit
 #include <signal.h> // kill
 #include <cerrno>   // errno
@@ -39,7 +40,48 @@ VirtualMachine::VirtualMachine()
     , m_ddcHostInput(0x0F)
     , m_originalHugepages(0)
     , m_hugepagesModified(false)
+    , m_lockFd(-1)
 {
+}
+
+// Helper to execute a command using fork/exec (secure, no shell injection)
+static int execCommandSecure(const std::vector<std::string> &args, bool suppressOutput = false) {
+    if (args.empty()) return -1;
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        return -1;
+    } else if (pid == 0) {
+        // Child process
+        if (suppressOutput) {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) {
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                close(devnull);
+            }
+        }
+        std::vector<char*> argv;
+        for (const auto &arg : args) {
+            argv.push_back(const_cast<char*>(arg.c_str()));
+        }
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
+        _exit(127); // execvp failed
+    }
+
+    // Parent process
+    int status;
+    while (waitpid(pid, &status, 0) == -1) {
+        if (errno != EINTR) {
+            return -1;
+        }
+    }
+
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    return -1;
 }
 
 VirtualMachine::~VirtualMachine()
@@ -178,7 +220,8 @@ void VirtualMachine::cleanup()
                 mounts.close();
 
                 if (isMounted) {
-                    int ret = std::system("umount /dev/hugepages 2>/dev/null");
+                    // Use fork/exec instead of std::system()
+                    int ret = execCommandSecure({"umount", "/dev/hugepages"}, true);
                     if (ret != 0) {
                         std::cerr << "[Warning] Failed to unmount /dev/hugepages" << std::endl;
                     }
@@ -325,40 +368,72 @@ bool VirtualMachine::validateIommuGroup(const std::string &pciAddress) const
 
 bool VirtualMachine::acquireInstanceLock()
 {
-    // Check if lock file exists
-    if (fs::exists(Config::InstanceLockFile)) {
-        // Read PID from lock file
-        std::ifstream lockFile(Config::InstanceLockFile);
-        pid_t existingPid = 0;
-        if (lockFile >> existingPid) {
-            // Check if process is still running
-            if (kill(existingPid, 0) == 0) {
-                std::cerr << "[Error] Another VxM instance is already running (PID: " << existingPid << ")." << std::endl;
-                std::cerr << "        Running multiple instances can cause system instability or crashes." << std::endl;
-                std::cerr << "        If you're sure no instance is running, remove: " << Config::InstanceLockFile << std::endl;
-                return false;
-            } else {
-                // Stale lock file, remove it
-                std::cout << "[VxM] Removing stale lock file..." << std::endl;
-                fs::remove(Config::InstanceLockFile);
+    // Use flock() for atomic instance locking to prevent TOCTOU race conditions
+    // This is more reliable than the previous check-then-create pattern
+
+    // Open (or create) the lock file
+    m_lockFd = open(Config::InstanceLockFile.c_str(), O_RDWR | O_CREAT, 0644);
+    if (m_lockFd < 0) {
+        std::cerr << "[Error] Failed to open instance lock file: " << strerror(errno) << std::endl;
+        return false;
+    }
+
+    // Try to acquire an exclusive lock (non-blocking)
+    if (flock(m_lockFd, LOCK_EX | LOCK_NB) != 0) {
+        if (errno == EWOULDBLOCK) {
+            // Another process holds the lock - read the PID for informational purposes
+            char buf[32] = {0};
+            lseek(m_lockFd, 0, SEEK_SET);
+            ssize_t n = read(m_lockFd, buf, sizeof(buf) - 1);
+            close(m_lockFd);
+            m_lockFd = -1;
+
+            pid_t existingPid = 0;
+            if (n > 0) {
+                existingPid = static_cast<pid_t>(std::strtol(buf, nullptr, 10));
             }
+
+            std::cerr << "[Error] Another VxM instance is already running";
+            if (existingPid > 0) {
+                std::cerr << " (PID: " << existingPid << ")";
+            }
+            std::cerr << "." << std::endl;
+            std::cerr << "        Running multiple instances can cause system instability or crashes." << std::endl;
+            return false;
+        } else {
+            std::cerr << "[Error] Failed to acquire instance lock: " << strerror(errno) << std::endl;
+            close(m_lockFd);
+            m_lockFd = -1;
+            return false;
         }
     }
 
-    // Create lock file with current PID
-    std::ofstream lockFile(Config::InstanceLockFile);
-    if (!lockFile) {
-        std::cerr << "[Error] Failed to create instance lock file." << std::endl;
-        return false;
+    // We have the lock - write our PID to the file
+    if (ftruncate(m_lockFd, 0) != 0) {
+        std::cerr << "[Warning] Failed to truncate lock file: " << strerror(errno) << std::endl;
     }
-    lockFile << getpid();
-    lockFile.close();
+    lseek(m_lockFd, 0, SEEK_SET);
 
+    std::string pidStr = std::to_string(getpid());
+    if (write(m_lockFd, pidStr.c_str(), pidStr.size()) < 0) {
+        std::cerr << "[Warning] Failed to write PID to lock file: " << strerror(errno) << std::endl;
+    }
+
+    // Keep m_lockFd open - the lock is held as long as the file descriptor is open
     return true;
 }
 
 void VirtualMachine::releaseInstanceLock()
 {
+    // Use flock() release - closing the fd automatically releases the lock
+    if (m_lockFd >= 0) {
+        // Explicitly release the lock before closing
+        flock(m_lockFd, LOCK_UN);
+        close(m_lockFd);
+        m_lockFd = -1;
+    }
+
+    // Also remove the lock file for cleanliness
     if (fs::exists(Config::InstanceLockFile)) {
         fs::remove(Config::InstanceLockFile);
     }
@@ -494,18 +569,21 @@ bool VirtualMachine::reserveHugepages(uint64_t ramGb)
         if (sudoUser && sudoUser[0] != '\0') {
             struct passwd* pwd = getpwnam(sudoUser);
             if (pwd) {
-                // Build mount command with user ownership
-                std::string mountCmd = "mount -t hugetlbfs -o uid=" +
-                                       std::to_string(pwd->pw_uid) +
-                                       ",gid=" + std::to_string(pwd->pw_gid) +
-                                       ",mode=1770 hugetlbfs /dev/hugepages 2>/dev/null";
+                // Use fork/exec instead of std::system() to prevent command injection
+                // Build mount options string safely (uid/gid are integers, no injection risk)
+                std::string mountOpts = "uid=" + std::to_string(pwd->pw_uid) +
+                                        ",gid=" + std::to_string(pwd->pw_gid) +
+                                        ",mode=1770";
 
                 // First, ensure /dev/hugepages exists and is mounted
                 if (!std::filesystem::exists("/dev/hugepages")) {
                     // Create the directory if it doesn't exist
                     if (std::filesystem::create_directories("/dev/hugepages")) {
-                        // Mount hugetlbfs on /dev/hugepages
-                        int mountResult = std::system(mountCmd.c_str());
+                        // Mount hugetlbfs on /dev/hugepages using fork/exec
+                        int mountResult = execCommandSecure({
+                            "mount", "-t", "hugetlbfs", "-o", mountOpts,
+                            "hugetlbfs", "/dev/hugepages"
+                        }, true);
                         if (mountResult != 0) {
                             std::cerr << "[Warning] Failed to mount hugetlbfs at /dev/hugepages" << std::endl;
                             std::cerr << "          Falling back to standard memory allocation." << std::endl;
@@ -533,8 +611,11 @@ bool VirtualMachine::reserveHugepages(uint64_t ramGb)
                     }
 
                     if (!isMounted) {
-                        // Mount with user ownership
-                        int mountResult = std::system(mountCmd.c_str());
+                        // Mount with user ownership using fork/exec
+                        int mountResult = execCommandSecure({
+                            "mount", "-t", "hugetlbfs", "-o", mountOpts,
+                            "hugetlbfs", "/dev/hugepages"
+                        }, true);
                         if (mountResult != 0) {
                             std::cerr << "[Warning] Failed to mount hugetlbfs at /dev/hugepages" << std::endl;
                             std::cerr << "          Falling back to standard memory allocation." << std::endl;
@@ -548,9 +629,12 @@ bool VirtualMachine::reserveHugepages(uint64_t ramGb)
                                       << strerror(errno) << std::endl;
                             std::cerr << "          Trying to remount with correct ownership..." << std::endl;
 
-                            // Try to unmount and remount with correct ownership
-                            std::system("umount /dev/hugepages 2>/dev/null");
-                            int mountResult = std::system(mountCmd.c_str());
+                            // Try to unmount and remount with correct ownership using fork/exec
+                            execCommandSecure({"umount", "/dev/hugepages"}, true);
+                            int mountResult = execCommandSecure({
+                                "mount", "-t", "hugetlbfs", "-o", mountOpts,
+                                "hugetlbfs", "/dev/hugepages"
+                            }, true);
                             if (mountResult != 0) {
                                 std::cerr << "[Warning] Failed to remount hugetlbfs" << std::endl;
                                 std::cerr << "          Falling back to standard memory allocation." << std::endl;
@@ -621,9 +705,9 @@ void VirtualMachine::initializeCrate()
         std::cout << "[VxM] VirtIO drivers ISO not found. Downloading..." << std::endl;
         std::cout << "[VxM] Source: " << Config::VirtioDriversUrl << std::endl;
 
-        // Check for curl or wget before forking
-        bool hasCurl = (std::system("command -v curl >/dev/null 2>&1") == 0);
-        bool hasWget = (std::system("command -v wget >/dev/null 2>&1") == 0);
+        // Check for curl or wget before forking using fork/exec
+        bool hasCurl = (execCommandSecure({"which", "curl"}, true) == 0);
+        bool hasWget = (execCommandSecure({"which", "wget"}, true) == 0);
 
         if (!hasCurl && !hasWget) {
             std::cerr << "[Error] Neither 'curl' nor 'wget' found. Please install one of them:" << std::endl;
@@ -1202,7 +1286,8 @@ void VirtualMachine::start()
 bool VirtualMachine::detectLookingGlass() const
 {
     if (fs::exists("/dev/kvmfr0")) return true;
-    int ret = std::system("modprobe kvmfr 2>/dev/null");
+    // Use fork/exec instead of std::system()
+    int ret = execCommandSecure({"modprobe", "kvmfr"}, true);
     if (ret == 0 && fs::exists("/dev/kvmfr0")) return true;
     if (fs::exists("/dev/shm")) return true;
     return false;
@@ -1241,24 +1326,34 @@ bool VirtualMachine::createLookingGlassShm(uint64_t sizeMb) const
 
 bool VirtualMachine::switchMonitorInput(const std::string &monitor, uint8_t inputValue) const
 {
-    if (std::system("command -v ddcutil >/dev/null 2>&1") != 0) {
+    // Use fork/exec instead of std::system()
+    if (execCommandSecure({"which", "ddcutil"}, true) != 0) {
         std::cerr << "[Warning] ddcutil not found. Cannot switch monitor input." << std::endl;
         return false;
     }
 
-    std::stringstream cmd;
-    cmd << "ddcutil ";
+    // Build ddcutil command arguments safely
+    std::vector<std::string> args = {"ddcutil"};
+
     if (!monitor.empty() && std::isdigit(static_cast<unsigned char>(monitor[0]))) {
-        cmd << "--bus " << monitor;
+        args.push_back("--bus");
+        args.push_back(monitor);
     } else if (!monitor.empty()) {
-        cmd << "--display " << monitor;
+        args.push_back("--display");
+        args.push_back(monitor);
     }
 
-    cmd << " setvcp 0x" << std::hex << static_cast<int>(Config::DdcInputSourceVcp)
-        << " 0x" << std::hex << static_cast<int>(inputValue)
-        << " 2>/dev/null";
+    args.push_back("setvcp");
 
-    int ret = std::system(cmd.str().c_str());
+    // Format VCP code and input value as hex strings
+    std::ostringstream vcpCode, inputVal;
+    vcpCode << "0x" << std::hex << static_cast<int>(Config::DdcInputSourceVcp);
+    inputVal << "0x" << std::hex << static_cast<int>(inputValue);
+
+    args.push_back(vcpCode.str());
+    args.push_back(inputVal.str());
+
+    int ret = execCommandSecure(args, true);
     if (ret != 0) {
         std::cerr << "[Warning] Failed to switch monitor input via DDC/CI." << std::endl;
         return false;

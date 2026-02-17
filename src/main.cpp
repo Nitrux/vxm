@@ -199,29 +199,61 @@ void printUsage()
               << "  - Static Binding is REQUIRED for VxM. Enable it before first use.\n";
 }
 
+// Helper to execute a command using fork/exec (secure, no shell injection)
+static int execCommand(const std::vector<std::string> &args) {
+    if (args.empty()) return -1;
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        return -1;
+    } else if (pid == 0) {
+        // Child process
+        std::vector<char*> argv;
+        for (const auto &arg : args) {
+            argv.push_back(const_cast<char*>(arg.c_str()));
+        }
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
+        _exit(127); // execvp failed
+    }
+
+    // Parent process
+    int status;
+    while (waitpid(pid, &status, 0) == -1) {
+        if (errno != EINTR) {
+            return -1;
+        }
+    }
+
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    return -1;
+}
+
 // Helper to enable static binding via overlayroot-chroot
 bool enableStaticBinding() {
     std::cout << "[VxM] Enabling Static Binding via overlayroot-chroot..." << std::endl;
     std::cout << "      This involves updating GRUB and initramfs. Please wait." << std::endl;
 
-    std::string cmd = "overlayroot-chroot /bin/sh -c '"
-                      "mount -t devtmpfs dev /dev && "
-                      "mount -t auto $(findfs LABEL=NX_VAR_LIB) /var/lib && "
-                      "if ! grep -q vxm.static_bind=1 /etc/default/grub; then "
-                      "sed -i \"s/^GRUB_CMDLINE_LINUX_DEFAULT=[\\\"'\\'']/&vxm.static_bind=1 /\" /etc/default/grub; "
-                      "fi && "
-                      "update-grub && "
-                      "update-initramfs -u && "
-                      "sync && "
-                      "umount /dev /var/lib'";
+    // Use fork/exec with explicit arguments instead of std::system()
+    // This prevents shell injection vulnerabilities
+    std::vector<std::string> args = {
+        "overlayroot-chroot", "/bin/sh", "-c",
+        "mount -t devtmpfs dev /dev && "
+        "mount -t auto $(findfs LABEL=NX_VAR_LIB) /var/lib && "
+        "if ! grep -q vxm.static_bind=1 /etc/default/grub; then "
+        "sed -i \"s/^GRUB_CMDLINE_LINUX_DEFAULT=[\\\"']/&vxm.static_bind=1 /\" /etc/default/grub; "
+        "fi && "
+        "update-grub && "
+        "update-initramfs -u && "
+        "sync && "
+        "umount /dev /var/lib"
+    };
 
-    int ret = std::system(cmd.c_str());
+    int ret = execCommand(args);
     if (ret != 0) {
-        int exitCode = ret;
-        if (WIFEXITED(ret)) {
-            exitCode = WEXITSTATUS(ret);
-        }
-        std::cerr << "[Error] Failed to enable static binding. Command returned: " << exitCode << std::endl;
+        std::cerr << "[Error] Failed to enable static binding. Command returned: " << ret << std::endl;
         return false;
     }
 
@@ -236,25 +268,22 @@ bool disableStaticBinding() {
     std::cout << "[VxM] Disabling Static Binding via overlayroot-chroot..." << std::endl;
     std::cout << "      This involves updating GRUB and initramfs. Please wait." << std::endl;
 
-    // Command to remove the parameter from /etc/default/grub inside the writable chroot
-    // Updated to use specific devtmpfs and findfs mounts for Nitrux compatibility
-    std::string cmd = "overlayroot-chroot /bin/sh -c \""
-                      "mount -t devtmpfs dev /dev && "
-                      "mount -t auto $(findfs LABEL=NX_VAR_LIB) /var/lib && "
-                      "sed -i 's/ vxm.static_bind=1//g' /etc/default/grub && "
-                      "sed -i 's/vxm.static_bind=1//g' /etc/default/grub && "
-                      "update-grub && "
-                      "update-initramfs -u && "
-                      "sync && "
-                      "umount /dev /var/lib\"";
+    // Use fork/exec with explicit arguments instead of std::system()
+    std::vector<std::string> args = {
+        "overlayroot-chroot", "/bin/sh", "-c",
+        "mount -t devtmpfs dev /dev && "
+        "mount -t auto $(findfs LABEL=NX_VAR_LIB) /var/lib && "
+        "sed -i 's/ vxm.static_bind=1//g' /etc/default/grub && "
+        "sed -i 's/vxm.static_bind=1//g' /etc/default/grub && "
+        "update-grub && "
+        "update-initramfs -u && "
+        "sync && "
+        "umount /dev /var/lib"
+    };
 
-    int ret = std::system(cmd.c_str());
+    int ret = execCommand(args);
     if (ret != 0) {
-        int exitCode = ret;
-        if (WIFEXITED(ret)) {
-            exitCode = WEXITSTATUS(ret);
-        }
-        std::cerr << "[Error] Failed to disable static binding. Command returned: " << exitCode << std::endl;
+        std::cerr << "[Error] Failed to disable static binding. Command returned: " << ret << std::endl;
         return false;
     }
 

@@ -13,6 +13,8 @@
 #include <unistd.h>
 #include <pwd.h>
 #include <cstdlib>
+#include <cstring>
+#include <cerrno>
 
 namespace VxM
 {
@@ -169,13 +171,27 @@ void ProfileManager::saveProfile(const Profile &profile)
         }
     }
 
-    // Write to temporary file first (atomic write pattern)
-    std::filesystem::path tempPath = m_configPath;
-    tempPath += ".tmp";
+    // Use mkstemp() for secure temporary file creation
+    // This prevents TOCTOU race conditions and symlink attacks
+    std::string tempTemplate = m_configPath.parent_path().string() + "/vxm.conf.XXXXXX";
+    std::vector<char> tempPath(tempTemplate.begin(), tempTemplate.end());
+    tempPath.push_back('\0');
 
-    std::ofstream file(tempPath);
+    int fd = mkstemp(tempPath.data());
+    if (fd < 0) {
+        std::cerr << "[Error] Failed to create temporary file: " << strerror(errno) << std::endl;
+        return;
+    }
+
+    // Convert fd to ofstream - we need to close the fd and reopen with ofstream
+    // since there's no standard way to create an ofstream from an fd
+    std::string tempPathStr(tempPath.data());
+    close(fd);
+
+    std::ofstream file(tempPathStr);
     if (!file) {
-        std::cerr << "[Error] Failed to open config file for writing: " << tempPath << std::endl;
+        std::cerr << "[Error] Failed to open temp file for writing: " << tempPathStr << std::endl;
+        std::filesystem::remove(tempPathStr);
         return;
     }
 
@@ -216,17 +232,19 @@ void ProfileManager::saveProfile(const Profile &profile)
 
     file.flush();
     if (!file.good()) {
-        std::cerr << "[Error] Failed to write profile to " << tempPath << std::endl;
+        std::cerr << "[Error] Failed to write profile to " << tempPathStr << std::endl;
+        file.close();
+        std::filesystem::remove(tempPathStr);
         return;
     }
     file.close();
 
     // Atomic rename to final path
     try {
-        std::filesystem::rename(tempPath, m_configPath);
+        std::filesystem::rename(tempPathStr, m_configPath);
     } catch (const std::filesystem::filesystem_error& e) {
         std::cerr << "[Error] Failed to save profile: " << e.what() << std::endl;
-        std::filesystem::remove(tempPath); // Clean up temp file
+        std::filesystem::remove(tempPathStr); // Clean up temp file
         return;
     }
 

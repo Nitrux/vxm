@@ -126,6 +126,9 @@ private:
     // Track hugepages for cleanup
     uint64_t m_originalHugepages;
     bool m_hugepagesModified;
+
+    // Lock file descriptor for flock-based atomic locking
+    int m_lockFd;
 };
 
 } // namespace VxM

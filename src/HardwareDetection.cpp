@@ -19,6 +19,10 @@
 #include <map>
 #include <pwd.h>
 #include <unistd.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <cerrno>
+#include <cstring>
 
 namespace fs = std::filesystem;
 
@@ -73,6 +77,84 @@ static std::string getHomeDir()
     return "/root"; // Last resort fallback
 }
 
+// Helper to execute a command and capture output using fork/exec
+// This avoids shell injection vulnerabilities present in popen()
+static std::string execAndCapture(const std::vector<std::string> &args)
+{
+    if (args.empty()) return "";
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        return "";
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return "";
+    } else if (pid == 0) {
+        // Child process
+        close(pipefd[0]); // Close read end
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+
+        // Redirect stderr to /dev/null
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+
+        std::vector<char*> argv;
+        for (const auto &arg : args) {
+            argv.push_back(const_cast<char*>(arg.c_str()));
+        }
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
+        _exit(127); // execvp failed
+    }
+
+    // Parent process
+    close(pipefd[1]); // Close write end
+
+    std::string output;
+    char buffer[512];
+    ssize_t n;
+    while ((n = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[n] = '\0';
+        output += buffer;
+    }
+    close(pipefd[0]);
+
+    int status;
+    while (waitpid(pid, &status, 0) == -1) {
+        if (errno != EINTR) break;
+    }
+
+    return output;
+}
+
+// Validate device ID to prevent path traversal attacks
+static bool isValidDeviceId(const std::string &deviceId)
+{
+    // Device IDs should be in format "0xXXXX" (hex) or just alphanumeric
+    // They should NOT contain path separators or special characters
+    if (deviceId.empty()) return false;
+
+    for (char c : deviceId) {
+        // Allow only alphanumeric characters and 'x' for hex prefix
+        if (!std::isalnum(static_cast<unsigned char>(c))) {
+            return false;
+        }
+    }
+
+    // Additional check: device IDs should not be too long (max 10 chars: "0x" + 8 hex digits)
+    if (deviceId.length() > 10) return false;
+
+    return true;
+}
+
 std::vector<GpuInfo> HardwareDetection::listGpus() const
 {
     std::vector<GpuInfo> gpus;
@@ -97,33 +179,29 @@ std::vector<GpuInfo> HardwareDetection::listGpus() const
         if (lspciAddress.rfind("0000:", 0) == 0) {
             lspciAddress = lspciAddress.substr(5);
         }
-        std::string lspciCmd = "lspci -s " + lspciAddress + " 2>/dev/null";
-        FILE* pipe = popen(lspciCmd.c_str(), "r");
-        if (pipe) {
-            char buffer[512];
-            if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-                std::string lspciOutput = buffer;
-                // Remove trailing newline
-                if (!lspciOutput.empty() && lspciOutput.back() == '\n') {
-                    lspciOutput.pop_back();
-                }
 
-                // Format: "03:00.0 VGA compatible controller: Vendor Device Name"
-                // Extract everything after the first colon
-                size_t colonPos = lspciOutput.find(':');
-                if (colonPos != std::string::npos) {
-                    // Find the second colon (after device type)
-                    size_t secondColonPos = lspciOutput.find(':', colonPos + 1);
-                    if (secondColonPos != std::string::npos) {
-                        info.name = lspciOutput.substr(secondColonPos + 2); // +2 to skip ": "
-                    } else {
-                        info.name = lspciOutput.substr(colonPos + 2);
-                    }
-                } else {
-                    info.name = lspciOutput;
-                }
+        // Use fork/exec instead of popen() to prevent command injection
+        std::string lspciOutput = execAndCapture({"lspci", "-s", lspciAddress});
+        if (!lspciOutput.empty()) {
+            // Remove trailing newline
+            if (!lspciOutput.empty() && lspciOutput.back() == '\n') {
+                lspciOutput.pop_back();
             }
-            pclose(pipe);
+
+            // Format: "03:00.0 VGA compatible controller: Vendor Device Name"
+            // Extract everything after the first colon
+            size_t colonPos = lspciOutput.find(':');
+            if (colonPos != std::string::npos) {
+                // Find the second colon (after device type)
+                size_t secondColonPos = lspciOutput.find(':', colonPos + 1);
+                if (secondColonPos != std::string::npos) {
+                    info.name = lspciOutput.substr(secondColonPos + 2); // +2 to skip ": "
+                } else {
+                    info.name = lspciOutput.substr(colonPos + 2);
+                }
+            } else {
+                info.name = lspciOutput;
+            }
         }
 
         // Fallback if lspci fails
@@ -185,19 +263,33 @@ std::vector<GpuInfo> HardwareDetection::listGpus() const
                 info.deviceId == "0x66af") {
                 info.needsRom = true;
 
-                // Look for ROM file in roms directory (try both with and without 0x prefix)
-                fs::path romsDir = fs::path(getHomeDir()) / "VxM" / "roms";
+                // Validate device ID to prevent path traversal attacks
+                if (isValidDeviceId(info.deviceId)) {
+                    // Look for ROM file in roms directory (try both with and without 0x prefix)
+                    fs::path romsDir = fs::path(getHomeDir()) / "VxM" / "roms";
 
-                // Try with 0x prefix first
-                fs::path romFileWith0x = romsDir / (info.deviceId + ".rom");
-                if (fs::exists(romFileWith0x)) {
-                    info.romPath = romFileWith0x.string();
-                } else {
-                    // Try without 0x prefix (e.g., "67df.rom")
-                    std::string deviceIdNoPrefix = info.deviceId.substr(2); // Remove "0x"
-                    fs::path romFileWithout0x = romsDir / (deviceIdNoPrefix + ".rom");
-                    if (fs::exists(romFileWithout0x)) {
-                        info.romPath = romFileWithout0x.string();
+                    // Try with 0x prefix first
+                    fs::path romFileWith0x = romsDir / (info.deviceId + ".rom");
+                    if (fs::exists(romFileWith0x)) {
+                        // Additional security: verify the resolved path is within romsDir
+                        std::error_code ec;
+                        fs::path canonicalRom = fs::canonical(romFileWith0x, ec);
+                        fs::path canonicalRoms = fs::canonical(romsDir, ec);
+                        if (!ec && canonicalRom.string().rfind(canonicalRoms.string(), 0) == 0) {
+                            info.romPath = canonicalRom.string();
+                        }
+                    } else {
+                        // Try without 0x prefix (e.g., "67df.rom")
+                        std::string deviceIdNoPrefix = info.deviceId.substr(2); // Remove "0x"
+                        fs::path romFileWithout0x = romsDir / (deviceIdNoPrefix + ".rom");
+                        if (fs::exists(romFileWithout0x)) {
+                            std::error_code ec;
+                            fs::path canonicalRom = fs::canonical(romFileWithout0x, ec);
+                            fs::path canonicalRoms = fs::canonical(romsDir, ec);
+                            if (!ec && canonicalRom.string().rfind(canonicalRoms.string(), 0) == 0) {
+                                info.romPath = canonicalRom.string();
+                            }
+                        }
                     }
                 }
             }
@@ -293,27 +385,23 @@ GpuInfo HardwareDetection::findPassthroughGpu() const
                 if (lspciAddress.rfind("0000:", 0) == 0) {
                     lspciAddress = lspciAddress.substr(5);
                 }
-                std::string lspciCmd = "lspci -s " + lspciAddress + " 2>/dev/null";
-                FILE* pipe = popen(lspciCmd.c_str(), "r");
-                if (pipe) {
-                    char buffer[512];
-                    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-                        std::string lspciOutput = buffer;
-                        if (!lspciOutput.empty() && lspciOutput.back() == '\n') {
-                            lspciOutput.pop_back();
-                        }
 
-                        size_t colonPos = lspciOutput.find(':');
-                        if (colonPos != std::string::npos) {
-                            size_t secondColonPos = lspciOutput.find(':', colonPos + 1);
-                            if (secondColonPos != std::string::npos) {
-                                info.name = lspciOutput.substr(secondColonPos + 2);
-                            } else {
-                                info.name = lspciOutput.substr(colonPos + 2);
-                            }
+                // Use fork/exec instead of popen() to prevent command injection
+                std::string lspciOutput = execAndCapture({"lspci", "-s", lspciAddress});
+                if (!lspciOutput.empty()) {
+                    if (!lspciOutput.empty() && lspciOutput.back() == '\n') {
+                        lspciOutput.pop_back();
+                    }
+
+                    size_t colonPos = lspciOutput.find(':');
+                    if (colonPos != std::string::npos) {
+                        size_t secondColonPos = lspciOutput.find(':', colonPos + 1);
+                        if (secondColonPos != std::string::npos) {
+                            info.name = lspciOutput.substr(secondColonPos + 2);
+                        } else {
+                            info.name = lspciOutput.substr(colonPos + 2);
                         }
                     }
-                    pclose(pipe);
                 }
 
                 // Fallback if lspci fails
@@ -353,19 +441,33 @@ GpuInfo HardwareDetection::findPassthroughGpu() const
                         info.deviceId == "0x66af") {
                         info.needsRom = true;
 
-                        // Look for ROM file in roms directory (try both with and without 0x prefix)
-                        fs::path romsDir = fs::path(getHomeDir()) / "VxM" / "roms";
+                        // Validate device ID to prevent path traversal attacks
+                        if (isValidDeviceId(info.deviceId)) {
+                            // Look for ROM file in roms directory (try both with and without 0x prefix)
+                            fs::path romsDir = fs::path(getHomeDir()) / "VxM" / "roms";
 
-                        // Try with 0x prefix first
-                        fs::path romFileWith0x = romsDir / (info.deviceId + ".rom");
-                        if (fs::exists(romFileWith0x)) {
-                            info.romPath = romFileWith0x.string();
-                        } else {
-                            // Try without 0x prefix (e.g., "67df.rom")
-                            std::string deviceIdNoPrefix = info.deviceId.substr(2); // Remove "0x"
-                            fs::path romFileWithout0x = romsDir / (deviceIdNoPrefix + ".rom");
-                            if (fs::exists(romFileWithout0x)) {
-                                info.romPath = romFileWithout0x.string();
+                            // Try with 0x prefix first
+                            fs::path romFileWith0x = romsDir / (info.deviceId + ".rom");
+                            if (fs::exists(romFileWith0x)) {
+                                // Additional security: verify the resolved path is within romsDir
+                                std::error_code ec;
+                                fs::path canonicalRom = fs::canonical(romFileWith0x, ec);
+                                fs::path canonicalRoms = fs::canonical(romsDir, ec);
+                                if (!ec && canonicalRom.string().rfind(canonicalRoms.string(), 0) == 0) {
+                                    info.romPath = canonicalRom.string();
+                                }
+                            } else {
+                                // Try without 0x prefix (e.g., "67df.rom")
+                                std::string deviceIdNoPrefix = info.deviceId.substr(2); // Remove "0x"
+                                fs::path romFileWithout0x = romsDir / (deviceIdNoPrefix + ".rom");
+                                if (fs::exists(romFileWithout0x)) {
+                                    std::error_code ec;
+                                    fs::path canonicalRom = fs::canonical(romFileWithout0x, ec);
+                                    fs::path canonicalRoms = fs::canonical(romsDir, ec);
+                                    if (!ec && canonicalRom.string().rfind(canonicalRoms.string(), 0) == 0) {
+                                        info.romPath = canonicalRom.string();
+                                    }
+                                }
                             }
                         }
                     }
@@ -591,17 +693,10 @@ std::string HardwareDetection::getSystemFingerprint() const
     }
 
     // Fallback: try reading from dmidecode output if sysfs fails
-    FILE* pipe = popen("dmidecode -s system-uuid 2>/dev/null", "r");
-    if (pipe) {
-        char buffer[128];
-        if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            uuid = buffer;
-            // Remove trailing newline
-            if (!uuid.empty() && uuid.back() == '\n') {
-                uuid.pop_back();
-            }
-        }
-        pclose(pipe);
+    // Use fork/exec instead of popen() to prevent command injection
+    uuid = execAndCapture({"dmidecode", "-s", "system-uuid"});
+    if (!uuid.empty() && uuid.back() == '\n') {
+        uuid.pop_back();
     }
 
     return uuid;
