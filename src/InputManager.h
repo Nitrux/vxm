@@ -1,8 +1,5 @@
-/*
- * Copyright (C) 2026 Nitrux Latinoamericana S.C.
- *
- * SPDX-License-Identifier: BSD-3-Clause
- */
+// SPDX-License-Identifier: BSD-3-Clause
+// Copyright 2026 Nitrux Latinoamericana S.C. <hello@nxos.org>
 
 #ifndef INPUTMANAGER_H
 #define INPUTMANAGER_H
