@@ -9,7 +9,7 @@ This architecture circumvents virtualization overhead and emulation layers, gran
 ## Features
 
 - **Evdev Input Arbitration**: Implements zero-latency input-linux passthrough with grab_all=on and ctrl-ctrl interrupt handling.
-- **Dynamic VFIO Binding**: Runtime driver override to vfio-pci with automatic host rebinding, BDF normalization, and IOMMU group validation.
+- **VFIO GPU Passthrough**: Uses an isolated secondary GPU bound to vfio-pci, with host-driver restoration after VM shutdown.
 - **DDC/CI Automation**: Writes VCP commands to the monitor bus to trigger input source switching on VM state changes.
 - **Latency Optimization**: Auto-provisions hugepages and initializes IVSHMEM for low-latency frame relay.
 - **Firmware/TPM Lifecycle**: Heuristic detection for matching OVMF CODE/VARS pairs and managed swtpm socket execution for guest OS compatibility.
