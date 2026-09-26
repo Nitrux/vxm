@@ -127,7 +127,7 @@ bool DeviceManager::bindToVfio(bool isMobileGpu)
                     std::cerr << "        - Dynamic unbinding will fail with 'non-zero usage count' error" << std::endl;
                     std::cerr << std::endl;
                     std::cerr << "        Solutions:" << std::endl;
-                    std::cerr << "        1. Use 'nx-envycontrol --switch integrated' to disable this GPU" << std::endl;
+                    std::cerr << "        1. Use Workspace Settings to switch the graphics mode to Integrated, then reboot." << std::endl;
                     std::cerr << "        2. Ensure this is NOT your primary display GPU" << std::endl;
                     std::cerr << "        3. Enable Static Binding (run 'sudo vxm start' and choose 'y')" << std::endl;
                     std::cerr << std::endl;
@@ -156,7 +156,7 @@ bool DeviceManager::bindToVfio(bool isMobileGpu)
                 std::cerr << std::endl;
                 std::cerr << "        Solutions:" << std::endl;
                 std::cerr << "        1. Close all applications using the GPU" << std::endl;
-                std::cerr << "        2. Use 'nx-envycontrol --switch integrated' to disable this GPU" << std::endl;
+                std::cerr << "        2. Use Workspace Settings to switch the graphics mode to Integrated, then reboot." << std::endl;
                 std::cerr << "        3. Enable Static Binding for boot-time isolation" << std::endl;
             } else {
                 std::cerr << "        This is likely because:" << std::endl;
@@ -204,7 +204,7 @@ bool DeviceManager::bindToVfio(bool isMobileGpu)
             std::cerr << "        - Driver does not support runtime unbinding" << std::endl;
             std::cerr << std::endl;
             std::cerr << "        Possible solutions:" << std::endl;
-            std::cerr << "        1. Use 'nx-envycontrol --switch integrated' to disable dGPU" << std::endl;
+            std::cerr << "        1. Use Workspace Settings to switch the graphics mode to Integrated, then reboot." << std::endl;
             std::cerr << "        2. Configure early VFIO binding (Static Binding)" << std::endl;
         } else if (finalDriver == "amdgpu" || finalDriver == "radeon") {
             std::cerr << "        AMD GPU detected - runtime binding failed." << std::endl;
