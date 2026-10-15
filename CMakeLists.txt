@@ -30,6 +30,18 @@ install(TARGETS vxm
     RUNTIME DESTINATION bin
 )
 
+set(CPACK_PACKAGE_NAME "vxm")
+set(CPACK_DEBIAN_PACKAGE_NAME "vxm")
+set(CPACK_PACKAGE_VENDOR "Nitrux Latinoamericana S.C.")
+set(CPACK_PACKAGE_CONTACT "uri_herrera@nxos.org")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Nitrux Hypervisor Orchestrator")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "uri_herrera@nxos.org")
+set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "clang, curl, nitrux-vfio-settings, ovmf, qemu-system-gui, qemu-system-x86, qemu-utils, swtpm")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+include(CPack)
+
 if(NOT TARGET uninstall)
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in"

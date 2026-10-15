@@ -11,12 +11,17 @@ set -e
 
 # -- Compile Source
 
+PACKAGE_VERSION="${PACKAGE_VERSION:-0.0.1}"
+TARGET_ARCH="${TARGET_ARCH:-$(dpkg --print-architecture)}"
+
 mkdir -p build && cd build
 
 HOST_MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
 
 cmake \
 	-DCMAKE_INSTALL_PREFIX=/usr \
+	-DCPACK_PACKAGE_VERSION="${PACKAGE_VERSION}" \
+	-DCPACK_DEBIAN_PACKAGE_ARCHITECTURE="${TARGET_ARCH}" \
 	-DENABLE_BSYMBOLICFUNCTIONS=OFF \
 	-DQUICK_COMPILER=ON \
 	-DCMAKE_BUILD_TYPE=Release \
@@ -34,30 +39,6 @@ make -j"$(nproc)"
 make install
 
 
-# -- Run checkinstall and Build Debian Package
+# -- Build the Debian package with CPack.
 
->> description-pak printf "%s\n" \
-	'Nitrux Hypervisor Orchestrator.' \
-	'' \
-	'VxM is a specialized hypervisor orchestrator for Nitrux.' \
-	''
-
-checkinstall -D -y \
-	--install=no \
-	--fstrans=yes \
-	--pkgname=vxm \
-	--pkgversion="$PACKAGE_VERSION" \
-	--pkgarch="$(dpkg --print-architecture)" \
-	--pkgrelease="1" \
-	--pkglicense=BSD-3 \
-	--pkggroup=utils \
-	--pkgsource=vxm \
-	--pakdir=. \
-	--maintainer=uri_herrera@nxos.org \
-	--provides=vxm \
-	--requires="clang,curl,nitrux-vfio-settings,ovmf,qemu-system-gui,qemu-system-x86,qemu-utils,swtpm" \
-	--nodoc \
-	--strip=no \
-	--stripso=yes \
-	--reset-uids=yes \
-	--deldesc=yes
+cpack -G DEB -C Release

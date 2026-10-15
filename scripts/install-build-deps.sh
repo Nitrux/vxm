@@ -26,7 +26,6 @@ $APT_COMMAND install -y --no-install-recommends \
     automake \
     autotools-dev \
     build-essential \
-    checkinstall \
     clang \
     cmake \
     curl \
